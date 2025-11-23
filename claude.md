@@ -5,7 +5,7 @@
 Architecture data en 4 couches pour centraliser et analyser les données comptables de 3500+ dossiers clients.
 
 ### Sources de données
-- **ACD/DIA** : 3500+ bases MySQL `compta_*` (serveur distant 192.168.20.24)
+- **ACD/DIA** : 3500+ bases MySQL `compta_*` (serveur distant)
 - **Pennylane** : Export Redshift (nouveau logiciel comptable)
 - **DIA Valoxy** : Base locale pour données cabinet
 
