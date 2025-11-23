@@ -611,6 +611,23 @@ echo "" >> "$RESULTS_FILE"
 echo "Rapport sauvegardé dans: $RESULTS_FILE" >> "$RESULTS_FILE"
 echo "Date: $(date '+%Y-%m-%d %H:%M:%S')" >> "$RESULTS_FILE"
 
+# ─── Nettoyage final (au cas où) ──────────────────────────
+log_section "🧹 NETTOYAGE FINAL"
+
+log "INFO" "Suppression des bases de test..."
+
+# Nettoyer les bases raw_acd de test
+for PREFIX in test_m1 test_m2 test_m3; do
+    $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;" 2>/dev/null || true
+done
+
+# Nettoyer les bases compta_* de test (méthode 4)
+for DB in $TEST_DATABASES; do
+    $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS test_m4_${DB};" 2>/dev/null || true
+done
+
+log "SUCCESS" "Nettoyage terminé"
+
 # ─── Afficher le rapport ───────────────────────────────────
 log_section "📄 RAPPORT FINAL"
 cat "$RESULTS_FILE"
