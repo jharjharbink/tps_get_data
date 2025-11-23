@@ -303,6 +303,33 @@ LIMIT 10;
 | Import incrémental quotidien | ~5-10 min |
 | Requête balance mensuelle | < 5 sec |
 
+### 🔬 Benchmark de performance
+
+Pour mesurer les performances réelles sur votre environnement et choisir la meilleure méthode d'import :
+
+```bash
+bash bash/util/benchmark_import_acd.sh
+```
+
+Ce script teste **9 combinaisons** (3 méthodes × 3 niveaux de parallélisme) sur 10 bases :
+
+**Méthodes testées :**
+1. **INSERT SELECT** (script actuel) - Import sélectif 6 tables
+2. **MYSQLDUMP SÉLECTIF** - Dump des 6 tables uniquement
+3. **MYSQLDUMP COMPLET** (ancien script) - Clone complet des bases
+
+**Niveaux de parallélisme :**
+- P=1 (séquentiel)
+- P=2 (modéré)
+- P=3 (maximum)
+
+Le benchmark génère un rapport détaillé (`benchmark_results_YYYYMMDD_HHMMSS.txt`) avec :
+- Tableau comparatif des temps d'exécution
+- Estimation pour 3500 bases
+- Recommandation de la configuration optimale
+
+**Durée du benchmark :** ~5-20 minutes selon les volumes
+
 ---
 
 ## ✅ Vérifications
