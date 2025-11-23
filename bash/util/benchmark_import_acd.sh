@@ -63,7 +63,9 @@ test_method_insert_select_no_batch() {
     # Créer schéma de test
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS ${PREFIX}_raw_acd < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+
+    # Modifier le fichier SQL pour utiliser la base de test
+    sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/" "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | $MYSQL $MYSQL_OPTS
 
     START=$(date +%s)
 
@@ -104,10 +106,15 @@ test_method_insert_select_no_batch() {
     " || echo "0")
 
     log "INFO" "Durée: ${DURATION}s - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
+
+    # Retourner UNIQUEMENT le résultat (sans logs)
+    RESULT="${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
 
     # Nettoyer
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
+
+    # Retourner le résultat
+    echo "$RESULT"
 }
 
 # ─── MÉTHODE 2: INSERT SELECT AVEC batching 100k (toutes tables) ───
@@ -121,7 +128,9 @@ test_method_insert_batched_all() {
     # Créer schéma de test
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS ${PREFIX}_raw_acd < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+
+    # Modifier le fichier SQL pour utiliser la base de test
+    sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/" "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | $MYSQL $MYSQL_OPTS
 
     START=$(date +%s)
 
@@ -177,10 +186,15 @@ test_method_insert_batched_all() {
     " || echo "0")
 
     log "INFO" "Durée: ${DURATION}s - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
+
+    # Retourner UNIQUEMENT le résultat (sans logs)
+    RESULT="${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
 
     # Nettoyer
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
+
+    # Retourner le résultat
+    echo "$RESULT"
 }
 
 # ─── MÉTHODE 3: INSERT SELECT AVEC batching 100k (écritures seulement) ───
@@ -194,7 +208,9 @@ test_method_insert_batched_ecritures() {
     # Créer schéma de test
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS ${PREFIX}_raw_acd < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+
+    # Modifier le fichier SQL pour utiliser la base de test
+    sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/" "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | $MYSQL $MYSQL_OPTS
 
     START=$(date +%s)
 
@@ -262,10 +278,15 @@ test_method_insert_batched_ecritures() {
     " || echo "0")
 
     log "INFO" "Durée: ${DURATION}s - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
+
+    # Retourner UNIQUEMENT le résultat (sans logs)
+    RESULT="${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
 
     # Nettoyer
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
+
+    # Retourner le résultat
+    echo "$RESULT"
 }
 
 # ─── MÉTHODE 4: DUMP COMPLET (ancien script, référence) ───
@@ -323,12 +344,17 @@ test_method_dump_full() {
     " || echo "0")
 
     log "INFO" "Durée: ${DURATION}s - Tables: $TOTAL_TABLES - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_TABLES} tables|${TOTAL_ROWS} lignes"
+
+    # Retourner UNIQUEMENT le résultat (sans logs)
+    RESULT="${METHOD_NAME}|${DURATION}|${TOTAL_TABLES} tables|${TOTAL_ROWS} lignes"
 
     # Nettoyer toutes les bases test_m4_compta_*
     for DB in $TEST_DATABASES; do
         $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_${DB};" 2>/dev/null || true
     done
+
+    # Retourner le résultat
+    echo "$RESULT"
 }
 
 # ─── Exécution des tests ───────────────────────────────────
@@ -340,22 +366,22 @@ echo "" >> "$RESULTS_FILE"
 declare -A RESULTS
 
 # Test Méthode 1: INSERT SELECT SANS batching
-RESULT=$(test_method_insert_select_no_batch)
+RESULT=$(test_method_insert_select_no_batch 2>&1 | tail -1)
 RESULTS["M1"]="$RESULT"
 echo "Méthode 1: $RESULT" >> "$RESULTS_FILE"
 
 # Test Méthode 2: INSERT SELECT avec batching TOUTES tables
-RESULT=$(test_method_insert_batched_all "$BATCH_SIZE")
+RESULT=$(test_method_insert_batched_all "$BATCH_SIZE" 2>&1 | tail -1)
 RESULTS["M2"]="$RESULT"
 echo "Méthode 2: $RESULT" >> "$RESULTS_FILE"
 
 # Test Méthode 3: INSERT SELECT avec batching écritures seulement
-RESULT=$(test_method_insert_batched_ecritures "$BATCH_SIZE")
+RESULT=$(test_method_insert_batched_ecritures "$BATCH_SIZE" 2>&1 | tail -1)
 RESULTS["M3"]="$RESULT"
 echo "Méthode 3: $RESULT" >> "$RESULTS_FILE"
 
 # Test Méthode 4: DUMP COMPLET (référence)
-RESULT=$(test_method_dump_full)
+RESULT=$(test_method_dump_full 2>&1 | tail -1)
 RESULTS["M4"]="$RESULT"
 echo "Méthode 4: $RESULT" >> "$RESULTS_FILE"
 
