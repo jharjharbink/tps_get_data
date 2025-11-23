@@ -1,0 +1,92 @@
+```mermaid
+flowchart TB
+    subgraph Sources["📥 SOURCES"]
+        DIA["DIA<br/>(valoxy)"]
+        ACD["ACD<br/>(compta_*)"]
+        PL["Pennylane<br/>(Redshift)"]
+        FUTURE["🔮 Futures<br/>Tiime, Silae,<br/>PolyActe..."]
+    end
+
+    subgraph RAW["📦 COUCHE RAW"]
+        RAW_DIA["raw_dia"]
+        RAW_COMPTA["compta_*<br/>(inchangé)"]
+        RAW_PL["raw_pennylane<br/>pl_*, acc_*, etl_*"]
+    end
+
+    subgraph TRANSFORM["🔄 COUCHE TRANSFORM"]
+        T_DOSSIERS["dossiers_acd<br/>dossiers_pennylane"]
+        T_ECR["ecritures_mensuelles<br/>(C/F agrégés)"]
+        T_TIERS["ecritures_tiers_detaillees<br/>(401/411 normalisés)"]
+        T_EXO["exercices"]
+        T_TEMPS["temps_collaborateurs"]
+    end
+
+    subgraph MDM["🔗 COUCHE MDM"]
+        direction TB
+        MDM_DOS["dossiers<br/>(jointure SIREN)"]
+        MDM_COL["collaborateurs"]
+        MDM_CON["contacts"]
+    end
+
+    subgraph MART["📊 COUCHE MART"]
+        direction TB
+        subgraph PILOT["mart_pilotage_cabinet"]
+            V_CLI["v_clients_par_service"]
+            V_PEN["v_penetration_services"]
+            V_PORT["v_portefeuille_collab"]
+        end
+        subgraph CDG["mart_controle_gestion"]
+            V_LED["v_company_ledger"]
+            V_TBG["v_tableau_bord_global"]
+            V_TEMPS["v_temps_par_dossier"]
+        end
+        subgraph PROD["mart_production_client"]
+            V_TIERS["v_tiers_detailles"]
+            V_CA["v_evolution_ca"]
+            V_TOP["v_top_clients_fournisseurs"]
+        end
+    end
+
+    subgraph OUTPUTS["📈 OUTPUTS"]
+        POWERBI["Power BI"]
+        OPENWEBUI["Open Web UI"]
+        N8N["n8n"]
+    end
+
+    %% Flux
+    DIA --> RAW_DIA
+    ACD --> RAW_COMPTA
+    PL --> RAW_PL
+    FUTURE -.-> RAW
+
+    RAW_DIA --> T_DOSSIERS
+    RAW_DIA --> T_TEMPS
+    RAW_COMPTA --> T_ECR
+    RAW_COMPTA --> T_TIERS
+    RAW_PL --> T_DOSSIERS
+    RAW_PL --> T_ECR
+    RAW_PL --> T_TIERS
+    RAW_DIA --> T_EXO
+    RAW_PL --> T_EXO
+
+    T_DOSSIERS --> MDM_DOS
+    T_ECR --> MART
+    T_TIERS --> MART
+    T_TEMPS --> MART
+    T_EXO --> MART
+
+    MDM_DOS --> MART
+    MDM_COL --> MART
+
+    MART --> POWERBI
+    MART --> OPENWEBUI
+    MART --> N8N
+
+    %% Styling
+    style Sources fill:#e1f5fe
+    style RAW fill:#fff3e0
+    style TRANSFORM fill:#f3e5f5
+    style MDM fill:#e8f5e9
+    style MART fill:#fce4ec
+    style OUTPUTS fill:#e0f2f1
+```
