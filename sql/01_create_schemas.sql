@@ -4,13 +4,16 @@
 -- ============================================================
 
 -- ─── COUCHE RAW ───────────────────────────────────────────
--- Copies brutes des sources (DIA, Pennylane)
--- Note: Les bases compta_* sont copiées directement par mysqldump
+-- Copies brutes des sources (DIA, Pennylane, ACD centralisé)
+-- Note: raw_acd centralise les 6 tables des bases compta_* avec partitionnement
 
 CREATE DATABASE IF NOT EXISTS raw_dia
     CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE DATABASE IF NOT EXISTS raw_pennylane
+    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS raw_acd
     CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ─── COUCHE TRANSFORM ─────────────────────────────────────

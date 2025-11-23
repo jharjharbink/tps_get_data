@@ -373,4 +373,27 @@ CREATE TABLE pm_mission_invoice_lines (
 DROP TABLE IF EXISTS pm_timesheet_entries;
 CREATE TABLE pm_timesheet_entries LIKE acc_timesheet_entries;
 
+-- ═══════════════════════════════════════════════════════════
+-- TABLE DE TRACKING (pour imports incrémentaux)
+-- ═══════════════════════════════════════════════════════════
+
+DROP TABLE IF EXISTS sync_tracking;
+CREATE TABLE sync_tracking (
+    table_name VARCHAR(50) PRIMARY KEY,
+    last_sync_date DATETIME DEFAULT NULL COMMENT 'Dernière synchro réussie',
+    last_sync_type ENUM('full', 'incremental', 'since') DEFAULT 'full',
+    rows_count BIGINT DEFAULT 0 COMMENT 'Nombre de lignes après sync',
+    last_status VARCHAR(20) DEFAULT 'pending' COMMENT 'success/failed',
+    last_duration_sec INT DEFAULT NULL COMMENT 'Durée du dernier import (sec)',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Initialisation du tracking
+INSERT INTO sync_tracking (table_name, last_sync_type, last_status) VALUES
+    ('pl_companies', 'full', 'pending'),
+    ('acc_companies_identification', 'full', 'pending'),
+    ('pl_fiscal_years', 'full', 'pending'),
+    ('pl_general_ledger', 'full', 'pending')
+ON DUPLICATE KEY UPDATE table_name=table_name;
+
 SELECT '✅ Tables RAW Pennylane créées avec succès !' AS status;

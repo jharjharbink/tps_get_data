@@ -2,6 +2,7 @@
 # ============================================================
 # IMPORT RAW PENNYLANE (depuis Redshift)
 # Export CSV depuis Redshift puis chargement dans raw_pennylane
+# Modes: --full (défaut), --incremental, --since DATE
 # ============================================================
 set -euo pipefail
 
@@ -9,7 +10,62 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/logging.sh"
 
-log_section "IMPORT RAW_PENNYLANE (Redshift)"
+# ─── Arguments ─────────────────────────────────────────────
+MODE="full"  # Par défaut: import complet
+SINCE_DATE=""
+
+usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --full              Import complet (TRUNCATE + réimport) [défaut]"
+    echo "  --incremental       Import incrémental (depuis last_sync_date)"
+    echo "  --since DATE        Import depuis une date spécifique"
+    echo "                      Format: \"23/11/2025 13:32:43\" (DD/MM/YYYY HH:MM:SS)"
+    echo ""
+    echo "Exemples:"
+    echo "  $0 --full"
+    echo "  $0 --incremental"
+    echo "  $0 --since \"01/01/2025 00:00:00\""
+    exit 0
+}
+
+# Fonction pour convertir DD/MM/YYYY HH:MM:SS vers YYYY-MM-DD HH:MM:SS
+convert_date_format() {
+    local input_date="$1"
+    echo "$input_date" | awk -F'[/ :]' '{printf "%s-%s-%s %s:%s:%s", $3, $2, $1, $4, $5, $6}'
+}
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --full)        MODE="full"; shift ;;
+        --incremental) MODE="incremental"; shift ;;
+        --since)       MODE="since"; SINCE_DATE="$2"; shift 2 ;;
+        -h|--help)     usage ;;
+        *)             echo "Option inconnue: $1"; usage ;;
+    esac
+done
+
+# Convertir la date si mode --since
+if [ "$MODE" = "since" ]; then
+    if [ -z "$SINCE_DATE" ]; then
+        echo "Erreur: --since nécessite une date"
+        usage
+    fi
+    SINCE_DATE=$(convert_date_format "$SINCE_DATE")
+fi
+
+# Récupérer last_sync_date si mode incremental
+if [ "$MODE" = "incremental" ]; then
+    SINCE_DATE=$($MYSQL $MYSQL_OPTS -N -e "
+        SELECT IFNULL(MAX(last_sync_date), '2000-01-01 00:00:00')
+        FROM raw_pennylane.sync_tracking
+        WHERE table_name IN ('pl_companies', 'pl_general_ledger')
+    " 2>/dev/null || echo "2000-01-01 00:00:00")
+    log "INFO" "Mode incrémental: import depuis $SINCE_DATE"
+fi
+
+log_section "IMPORT RAW_PENNYLANE (Redshift) - Mode: $MODE"
 
 # Fichiers temporaires
 TMP_COMPANIES="/tmp/pl_companies.csv"
@@ -31,10 +87,17 @@ export PGPASSWORD="$REDSHIFT_PASS"
 log_subsection "Export pl_companies"
 log "INFO" "Export Companies depuis Redshift..."
 
+# Construire la clause WHERE si mode incremental/since
+WHERE_CLAUSE=""
+if [ "$MODE" != "full" ] && [ -n "$SINCE_DATE" ]; then
+    WHERE_CLAUSE="WHERE c.updated_at >= '$SINCE_DATE'"
+    log "INFO" "Filtre: updated_at >= $SINCE_DATE"
+fi
+
 psql --csv -v ON_ERROR_STOP=1 --pset null='NULL' \
     -h "$REDSHIFT_HOST" -p "$REDSHIFT_PORT" -U "$REDSHIFT_USER" -d "$REDSHIFT_DB" \
     > "$TMP_COMPANIES" <<EOF
-SELECT 
+SELECT
     c.id as company_id,
     REPLACE(c.name, ',', ';') as name,
     REPLACE(c.firm_name, ',', ';') as firm_name,
@@ -57,6 +120,7 @@ SELECT
     c.created_at,
     c.updated_at
 FROM pennylane.companies c
+$WHERE_CLAUSE
 ORDER BY c.id;
 EOF
 
@@ -119,6 +183,13 @@ log "SUCCESS" "Export Fiscal Years OK"
 log_subsection "Export pl_general_ledger"
 log "INFO" "Export General Ledger depuis Redshift (peut être long)..."
 
+# Construire la clause WHERE pour GL
+WHERE_CLAUSE_GL=""
+if [ "$MODE" != "full" ] && [ -n "$SINCE_DATE" ]; then
+    WHERE_CLAUSE_GL="WHERE glv.document_updated_at >= '$SINCE_DATE'"
+    log "INFO" "Filtre GL: document_updated_at >= $SINCE_DATE"
+fi
+
 psql --csv -v ON_ERROR_STOP=1 --pset null='NULL' \
     -h "$REDSHIFT_HOST" -p "$REDSHIFT_PORT" -U "$REDSHIFT_USER" -d "$REDSHIFT_DB" \
     > "$TMP_GL" <<EOF
@@ -135,6 +206,7 @@ SELECT
     COALESCE(glv.credit, 0) AS credit,
     glv.document_updated_at
 FROM accounting.general_ledger_revision glv
+$WHERE_CLAUSE_GL
 ORDER BY glv.company_id, glv.plan_item_number, glv."date";
 EOF
 
@@ -149,10 +221,16 @@ log_section "CHARGEMENT DANS MYSQL"
 
 # Vider et charger pl_companies
 log "INFO" "Chargement pl_companies..."
-$MYSQL $MYSQL_OPTS -e "TRUNCATE TABLE raw_pennylane.pl_companies;"
+if [ "$MODE" = "full" ]; then
+    $MYSQL $MYSQL_OPTS -e "TRUNCATE TABLE raw_pennylane.pl_companies;"
+    LOAD_MODE="INTO"
+else
+    LOAD_MODE="REPLACE INTO"
+fi
+
 $MYSQL $MYSQL_OPTS --local-infile=1 -e "
 LOAD DATA LOCAL INFILE '$TMP_COMPANIES'
-INTO TABLE raw_pennylane.pl_companies
+$LOAD_MODE TABLE raw_pennylane.pl_companies
 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
 IGNORE 1 LINES
 (company_id, name, firm_name, trade_name, registration_number, vat_number,
@@ -191,34 +269,46 @@ FY_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_pennylane.pl_fisca
 log "SUCCESS" "pl_fiscal_years: $FY_COUNT lignes"
 
 # Chargement GL direct avec désactivation des index (plus rapide pour gros volumes)
-log "INFO" "Chargement pl_general_ledger (LOAD DATA direct avec index désactivés)..."
+log "INFO" "Chargement pl_general_ledger..."
 
 TOTAL_LINES=$(tail -n +2 "$TMP_GL" | wc -l)
 log "INFO" "$TOTAL_LINES lignes à charger"
 
-# Désactiver les index, vider la table, charger, réactiver les index
-$MYSQL $MYSQL_OPTS -e "
-SET FOREIGN_KEY_CHECKS = 0;
-SET UNIQUE_CHECKS = 0;
-ALTER TABLE raw_pennylane.pl_general_ledger DISABLE KEYS;
-TRUNCATE TABLE raw_pennylane.pl_general_ledger;
-"
+if [ "$MODE" = "full" ]; then
+    # Mode full: TRUNCATE et optimisations
+    $MYSQL $MYSQL_OPTS -e "
+    SET FOREIGN_KEY_CHECKS = 0;
+    SET UNIQUE_CHECKS = 0;
+    ALTER TABLE raw_pennylane.pl_general_ledger DISABLE KEYS;
+    TRUNCATE TABLE raw_pennylane.pl_general_ledger;
+    "
 
-$MYSQL $MYSQL_OPTS --local-infile=1 -e "
-LOAD DATA LOCAL INFILE '$TMP_GL'
-INTO TABLE raw_pennylane.pl_general_ledger
-FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
-IGNORE 1 LINES
-(gl_line_id, company_id, company_name, txn_date, compte, compte_label,
- journal_code, journal_label, debit, credit, document_updated_at);
-"
+    $MYSQL $MYSQL_OPTS --local-infile=1 -e "
+    LOAD DATA LOCAL INFILE '$TMP_GL'
+    INTO TABLE raw_pennylane.pl_general_ledger
+    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
+    IGNORE 1 LINES
+    (gl_line_id, company_id, company_name, txn_date, compte, compte_label,
+     journal_code, journal_label, debit, credit, document_updated_at);
+    "
 
-log "INFO" "Reconstruction des index..."
-$MYSQL $MYSQL_OPTS -e "
-ALTER TABLE raw_pennylane.pl_general_ledger ENABLE KEYS;
-SET UNIQUE_CHECKS = 1;
-SET FOREIGN_KEY_CHECKS = 1;
-"
+    log "INFO" "Reconstruction des index..."
+    $MYSQL $MYSQL_OPTS -e "
+    ALTER TABLE raw_pennylane.pl_general_ledger ENABLE KEYS;
+    SET UNIQUE_CHECKS = 1;
+    SET FOREIGN_KEY_CHECKS = 1;
+    "
+else
+    # Mode incremental/since: REPLACE INTO (plus lent mais gère les doublons)
+    $MYSQL $MYSQL_OPTS --local-infile=1 -e "
+    LOAD DATA LOCAL INFILE '$TMP_GL'
+    REPLACE INTO TABLE raw_pennylane.pl_general_ledger
+    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
+    IGNORE 1 LINES
+    (gl_line_id, company_id, company_name, txn_date, compte, compte_label,
+     journal_code, journal_label, debit, credit, document_updated_at);
+    "
+fi
 
 GL_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_pennylane.pl_general_ledger")
 log "SUCCESS" "pl_general_ledger: $GL_COUNT lignes"
@@ -227,5 +317,38 @@ log "SUCCESS" "pl_general_ledger: $GL_COUNT lignes"
 log "INFO" "Nettoyage fichiers temporaires..."
 rm -f "$TMP_COMPANIES" "$TMP_COMPANIES_ID" "$TMP_FISCAL_YEARS" "$TMP_GL" /tmp/gl_batch_*.csv
 
+# ─── Mise à jour sync_tracking ─────────────────────────────
+log "INFO" "Mise à jour du tracking..."
+
+$MYSQL $MYSQL_OPTS raw_pennylane -e "
+    UPDATE sync_tracking
+    SET last_sync_date = NOW(),
+        last_sync_type = '$MODE',
+        rows_count = $COMPANIES_COUNT,
+        last_status = 'success'
+    WHERE table_name = 'pl_companies';
+
+    UPDATE sync_tracking
+    SET last_sync_date = NOW(),
+        last_sync_type = '$MODE',
+        rows_count = $GL_COUNT,
+        last_status = 'success'
+    WHERE table_name = 'pl_general_ledger';
+
+    UPDATE sync_tracking
+    SET last_sync_date = NOW(),
+        last_sync_type = '$MODE',
+        rows_count = $FY_COUNT,
+        last_status = 'success'
+    WHERE table_name = 'pl_fiscal_years';
+
+    UPDATE sync_tracking
+    SET last_sync_date = NOW(),
+        last_sync_type = '$MODE',
+        rows_count = $COMPANIES_ID_COUNT,
+        last_status = 'success'
+    WHERE table_name = 'acc_companies_identification';
+"
+
 log_section "IMPORT RAW_PENNYLANE TERMINÉ"
-log "SUCCESS" "Companies: $COMPANIES_COUNT | Fiscal Years: $FY_COUNT | GL: $GL_COUNT"
+log "SUCCESS" "Mode: $MODE | Companies: $COMPANIES_COUNT | Fiscal Years: $FY_COUNT | GL: $GL_COUNT"

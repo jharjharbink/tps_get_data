@@ -17,6 +17,7 @@ SKIP_MART=false
 SKIP_INIT=false
 INIT_ONLY=false
 DATA_ONLY=false
+ACD_MODE="--full"  # Par défaut: import complet ACD
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -37,14 +38,19 @@ usage() {
     echo "  --init-only       Créer uniquement les schémas, tables et procédures (sans données)"
     echo "  --data-only       Insérer uniquement les données (RAW Pennylane + ACD/DIA)"
     echo ""
+    echo "Options RAW ACD:"
+    echo "  --acd-full        Import complet raw_acd (TRUNCATE + réimport) [défaut]"
+    echo "  --acd-incremental Import incrémental raw_acd (nouveautés uniquement)"
+    echo ""
     echo "  -h, --help        Afficher cette aide"
     echo ""
     echo "Exemples:"
-    echo "  $0                           # Pipeline complet"
+    echo "  $0                           # Pipeline complet (ACD full)"
     echo "  $0 --skip-raw                # Sans réimport des données RAW"
+    echo "  $0 --acd-incremental         # Pipeline avec import ACD incrémental"
     echo "  $0 --transform-only          # Seulement TRANSFORM"
     echo "  $0 --init-only               # Créer tables/procédures sans données"
-    echo "  $0 --data-only               # Importer données sans recréer les tables"
+    echo "  $0 --data-only --acd-incremental  # Import données avec ACD incrémental"
     exit 0
 }
 
@@ -60,6 +66,8 @@ while [[ $# -gt 0 ]]; do
         --mart-only)       SKIP_RAW=true; SKIP_TRANSFORM=true; SKIP_MDM=true; shift ;;
         --init-only)       INIT_ONLY=true; shift ;;
         --data-only)       DATA_ONLY=true; SKIP_INIT=true; shift ;;
+        --acd-full)        ACD_MODE="--acd-full"; shift ;;
+        --acd-incremental) ACD_MODE="--acd-incremental"; shift ;;
         -h|--help)         usage ;;
         *)                 echo "Option inconnue: $1"; usage ;;
     esac
@@ -77,6 +85,7 @@ echo "  SKIP_MART:      $SKIP_MART"
 echo "  SKIP_INIT:      $SKIP_INIT"
 echo "  INIT_ONLY:      $INIT_ONLY"
 echo "  DATA_ONLY:      $DATA_ONLY"
+echo "  ACD_MODE:       $ACD_MODE"
 
 # ─── Initialisation (création des schémas) ─────────────────
 if [ "$SKIP_INIT" = false ]; then
@@ -87,6 +96,9 @@ if [ "$SKIP_INIT" = false ]; then
 
     log "INFO" "Création des tables RAW Pennylane..."
     $MYSQL $MYSQL_OPTS < "$SCRIPT_DIR/sql/02_raw_pennylane_tables.sql"
+
+    log "INFO" "Création des tables RAW ACD..."
+    $MYSQL $MYSQL_OPTS < "$SCRIPT_DIR/sql/02b_raw_acd_tables.sql"
 
     log "INFO" "Création des tables TRANSFORM..."
     $MYSQL $MYSQL_OPTS < "$SCRIPT_DIR/sql/03_transform_tables.sql"
@@ -126,10 +138,10 @@ if [ "$DATA_ONLY" = true ]; then
     
     log "INFO" "Import raw_dia (DIA/valoxy)..."
     bash "$SCRIPT_DIR/bash/raw/01_import_raw_dia.sh"
-    
-    log "INFO" "Import compta_* (ACD)..."
-    bash "$SCRIPT_DIR/bash/raw/02_import_raw_compta.sh"
-    
+
+    log "INFO" "Import raw_acd (ACD - mode: $ACD_MODE)..."
+    bash "$SCRIPT_DIR/bash/raw/02_import_raw_compta.sh" "$ACD_MODE"
+
     log "INFO" "Import raw_pennylane (Redshift)..."
     bash "$SCRIPT_DIR/bash/raw/03_import_raw_pennylane.sh"
     
@@ -140,13 +152,13 @@ if [ "$DATA_ONLY" = true ]; then
     
     log "INFO" "Résumé des imports:"
     $MYSQL $MYSQL_OPTS -t -e "
-    SELECT 'raw_dia' AS source, COUNT(*) AS nb_tables 
+    SELECT 'raw_dia' AS source, COUNT(*) AS nb_tables
     FROM information_schema.tables WHERE table_schema = 'raw_dia'
     UNION ALL
-    SELECT 'compta_*', COUNT(*) 
-    FROM information_schema.schemata WHERE schema_name LIKE 'compta_%'
+    SELECT 'raw_acd', COUNT(DISTINCT dossier_code)
+    FROM raw_acd.histo_ligne_ecriture
     UNION ALL
-    SELECT 'raw_pennylane', COUNT(*) 
+    SELECT 'raw_pennylane', COUNT(*)
     FROM information_schema.tables WHERE table_schema = 'raw_pennylane';
     "
     exit 0
@@ -155,7 +167,7 @@ fi
 # ─── Couche RAW ────────────────────────────────────────────
 if [ "$SKIP_RAW" = false ]; then
     log_subsection "COUCHE RAW"
-    bash "$SCRIPT_DIR/bash/raw/run_all_raw.sh"
+    bash "$SCRIPT_DIR/bash/raw/run_all_raw.sh" "$ACD_MODE"
 else
     log "INFO" "⏭️  RAW ignoré (--skip-raw)"
 fi
@@ -193,22 +205,22 @@ log "SUCCESS" "Durée totale: $(($PIPELINE_DURATION / 60)) min $(($PIPELINE_DURA
 
 log "INFO" "Résumé des volumes:"
 $MYSQL $MYSQL_OPTS -t -e "
-SELECT 'RAW' AS couche, 'raw_dia' AS schema_name, COUNT(*) AS nb_tables 
+SELECT 'RAW' AS couche, 'raw_dia' AS schema_name, COUNT(*) AS nb_tables
 FROM information_schema.tables WHERE table_schema = 'raw_dia'
 UNION ALL
-SELECT 'RAW', 'compta_*', COUNT(*) 
-FROM information_schema.schemata WHERE schema_name LIKE 'compta_%'
+SELECT 'RAW', 'raw_acd', COUNT(DISTINCT dossier_code)
+FROM raw_acd.histo_ligne_ecriture
 UNION ALL
-SELECT 'RAW', 'raw_pennylane', COUNT(*) 
+SELECT 'RAW', 'raw_pennylane', COUNT(*)
 FROM information_schema.tables WHERE table_schema = 'raw_pennylane'
 UNION ALL
-SELECT 'TRANSFORM', 'ecritures_mensuelles', COUNT(*) 
+SELECT 'TRANSFORM', 'ecritures_mensuelles', COUNT(*)
 FROM transform_compta.ecritures_mensuelles
 UNION ALL
-SELECT 'MDM', 'dossiers', COUNT(*) 
+SELECT 'MDM', 'dossiers', COUNT(*)
 FROM mdm.dossiers
 UNION ALL
-SELECT 'MART', 'vues pilotage', COUNT(*) 
+SELECT 'MART', 'vues pilotage', COUNT(*)
 FROM information_schema.views WHERE table_schema = 'mart_pilotage_cabinet';
 "
 
