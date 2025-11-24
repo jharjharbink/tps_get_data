@@ -20,37 +20,77 @@ DATA_ONLY=false
 ACD_MODE="--full"  # Par défaut: import complet ACD
 
 usage() {
-    echo "Usage: $0 [OPTIONS]"
-    echo ""
-    echo "Options générales:"
-    echo "  --skip-raw        Sauter l'import RAW"
-    echo "  --skip-transform  Sauter la couche TRANSFORM"
-    echo "  --skip-mdm        Sauter la couche MDM"
-    echo "  --skip-mart       Sauter la couche MART"
-    echo "  --skip-init       Sauter la création des schémas/tables/procédures"
-    echo ""
-    echo "Options raccourcis:"
-    echo "  --transform-only  Exécuter uniquement TRANSFORM"
-    echo "  --mdm-only        Exécuter uniquement MDM"
-    echo "  --mart-only       Exécuter uniquement MART"
-    echo ""
-    echo "Options spéciales:"
-    echo "  --init-only       Créer uniquement les schémas, tables et procédures (sans données)"
-    echo "  --data-only       Insérer uniquement les données (RAW Pennylane + ACD/DIA)"
-    echo ""
-    echo "Options RAW ACD:"
-    echo "  --acd-full        Import complet raw_acd (TRUNCATE + réimport) [défaut]"
-    echo "  --acd-incremental Import incrémental raw_acd (nouveautés uniquement)"
-    echo ""
-    echo "  -h, --help        Afficher cette aide"
-    echo ""
-    echo "Exemples:"
-    echo "  $0                           # Pipeline complet (ACD full)"
-    echo "  $0 --skip-raw                # Sans réimport des données RAW"
-    echo "  $0 --acd-incremental         # Pipeline avec import ACD incrémental"
-    echo "  $0 --transform-only          # Seulement TRANSFORM"
-    echo "  $0 --init-only               # Créer tables/procédures sans données"
-    echo "  $0 --data-only --acd-incremental  # Import données avec ACD incrémental"
+    cat <<'EOF'
+Usage: ./run_pipeline.sh [OPTIONS]
+
+┌─────────────────────────────────────────────────────────────────┐
+│ OPTIONS GÉNÉRALES                                               │
+└─────────────────────────────────────────────────────────────────┘
+  --skip-raw        Sauter l'import RAW
+  --skip-transform  Sauter la couche TRANSFORM
+  --skip-mdm        Sauter la couche MDM
+  --skip-mart       Sauter la couche MART
+  --skip-init       Sauter la création des schémas/tables/procédures
+
+┌─────────────────────────────────────────────────────────────────┐
+│ OPTIONS RACCOURCIS                                              │
+└─────────────────────────────────────────────────────────────────┘
+  --transform-only  Exécuter uniquement TRANSFORM
+  --mdm-only        Exécuter uniquement MDM
+  --mart-only       Exécuter uniquement MART
+
+┌─────────────────────────────────────────────────────────────────┐
+│ OPTIONS SPÉCIALES                                               │
+└─────────────────────────────────────────────────────────────────┘
+  --init-only       Créer schémas/tables/procédures (sans données)
+  --data-only       Import données uniquement (sans création)
+
+┌─────────────────────────────────────────────────────────────────┐
+│ OPTIONS RAW ACD                                                 │
+└─────────────────────────────────────────────────────────────────┘
+  --acd-full        Import complet (TRUNCATE + réimport) [défaut]
+  --acd-incremental Import incrémental (nouveautés uniquement)
+
+┌─────────────────────────────────────────────────────────────────┐
+│ EXEMPLES - CAS D'USAGE ADMIN SYSTÈME                           │
+└─────────────────────────────────────────────────────────────────┘
+
+📦 INSTALLATION INITIALE (première fois)
+  ./run_pipeline.sh --init-only
+  ./run_pipeline.sh --data-only --acd-full
+
+🔄 IMPORT QUOTIDIEN (cron 2h00 du matin)
+  ./run_pipeline.sh --skip-init --acd-incremental
+
+🔧 RÉIMPORT COMPLET (hebdomadaire ou après incident)
+  bash bash/util/clean_all.sh
+  ./run_pipeline.sh --acd-full
+
+⚡ IMPORT RAW UNIQUEMENT (sans TRANSFORM/MDM/MART)
+  ./run_pipeline.sh --skip-init --skip-transform --skip-mdm --skip-mart
+
+🐛 DEBUG : Recréer uniquement les procédures stockées
+  ./run_pipeline.sh --init-only --skip-raw
+
+🚨 URGENCE : Import ACD sans toucher au reste
+  bash bash/raw/02_import_raw_compta.sh --full
+
+📊 REBUILD couches analytiques (RAW OK, refaire le reste)
+  ./run_pipeline.sh --skip-raw --skip-init
+
+🧪 TEST : Valider structure avant import massif
+  ./run_pipeline.sh --init-only
+  # Vérifier manuellement avec SELECT * FROM sync_tracking;
+
+💾 BACKUP avant grosse opération
+  mysqldump raw_acd transform_compta mdm > backup_$(date +%Y%m%d).sql
+  ./run_pipeline.sh --acd-full
+
+🔍 MONITORING : Vérifier l'état
+  mysql -e "SELECT * FROM raw_acd.sync_tracking;"
+  tail -f logs/pipeline_*.log
+
+EOF
     exit 0
 }
 

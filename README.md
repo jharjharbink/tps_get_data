@@ -194,6 +194,295 @@ bash bash/util/benchmark_import_acd.sh
 
 ---
 
+## 👨‍💻 Guide Admin Système - Cas d'usage
+
+### 🚀 Première installation
+
+```bash
+# 1. Cloner le projet
+git clone https://github.com/jharjharbink/tps_get_data.git
+cd tps_get_data
+
+# 2. Configurer les credentials (créer bash/config.sh)
+cp bash/config.sh.example bash/config.sh
+nano bash/config.sh  # Adapter les credentials MySQL et ACD
+
+# 3. Créer les schémas et tables
+./run_pipeline.sh --init-only
+
+# 4. Premier import complet
+./run_pipeline.sh --data-only --acd-full
+```
+
+**Durée estimée** : ~4-6h pour 3500 bases ACD
+
+---
+
+### 🔄 Import quotidien automatique (cron)
+
+**Recommandation** : Import incrémental tous les jours à 2h00
+
+```bash
+# Ajouter au crontab
+crontab -e
+
+# Ligne à ajouter :
+0 2 * * * cd /chemin/vers/tps_get_data && ./run_pipeline.sh --skip-init --acd-incremental >> logs/cron.log 2>&1
+```
+
+**Avantages** :
+- ✅ Rapide (quelques minutes au lieu de 4-6h)
+- ✅ Capture uniquement les nouveautés depuis `last_sync_date`
+- ✅ Pas de TRUNCATE, utilise `ON DUPLICATE KEY UPDATE`
+
+**Limitations** :
+- ⚠️ Les modifications d'écritures existantes ne sont pas capturées (seules les nouvelles)
+- 💡 Solution : Import `--full` hebdomadaire le dimanche
+
+---
+
+### 🔧 Réimport complet hebdomadaire
+
+**Recommandation** : Import complet tous les dimanches à 1h00
+
+```bash
+# Cron hebdomadaire
+0 1 * * 0 cd /chemin/vers/tps_get_data && bash bash/util/clean_all.sh <<< "oui" && ./run_pipeline.sh --acd-full >> logs/cron_weekly.log 2>&1
+```
+
+**Cas d'usage** :
+- Capturer les modifications d'écritures existantes
+- Nettoyer d'éventuelles incohérences
+- Reconstruire les partitions de manière propre
+
+---
+
+### 🚨 Gestion d'incidents
+
+#### Incident 1 : Import planté à mi-parcours
+
+```bash
+# Vérifier l'état
+mysql -u root -p -e "SELECT * FROM raw_acd.sync_tracking;"
+
+# Option A : Reprendre l'import (si tables OK)
+./run_pipeline.sh --skip-init --acd-full
+
+# Option B : Tout recréer (si corruption)
+bash bash/util/clean_all.sh
+./run_pipeline.sh --acd-full
+```
+
+---
+
+#### Incident 2 : Base ACD source inaccessible
+
+```bash
+# Test de connexion
+mysql -h $ACD_HOST -P $ACD_PORT -u $ACD_USER -p$ACD_PASS -e "SELECT 1"
+
+# Import RAW uniquement depuis sources accessibles (DIA + Pennylane)
+bash bash/raw/01_import_raw_dia.sh
+bash bash/raw/03_import_raw_pennylane.sh
+
+# Rebuild TRANSFORM/MDM/MART avec données existantes
+./run_pipeline.sh --skip-raw
+```
+
+---
+
+#### Incident 3 : Données corrompues dans TRANSFORM/MDM
+
+```bash
+# Recréer uniquement les couches analytiques (sans retoucher RAW)
+./run_pipeline.sh --skip-raw --skip-init
+
+# Ou rebuild spécifique
+./run_pipeline.sh --transform-only
+./run_pipeline.sh --mdm-only
+```
+
+---
+
+### 🐛 Debug et troubleshooting
+
+#### Vérifier l'état des imports
+
+```sql
+-- État de raw_acd
+SELECT
+    table_name,
+    FORMAT(rows_count, 0) as lignes,
+    last_sync_type as mode,
+    DATE_FORMAT(last_sync_date, '%Y-%m-%d %H:%i') as derniere_synchro,
+    last_status,
+    last_duration_sec
+FROM raw_acd.sync_tracking
+ORDER BY table_name;
+
+-- Nombre de dossiers centralisés
+SELECT COUNT(DISTINCT dossier_code) FROM raw_acd.histo_ligne_ecriture;
+
+-- Volumétrie par partition
+SELECT
+    PARTITION_NAME,
+    TABLE_ROWS,
+    CONCAT(ROUND(DATA_LENGTH / 1024 / 1024, 2), ' MB') AS taille
+FROM information_schema.PARTITIONS
+WHERE TABLE_SCHEMA = 'raw_acd'
+  AND TABLE_NAME = 'histo_ligne_ecriture'
+ORDER BY PARTITION_ORDINAL_POSITION;
+```
+
+---
+
+#### Logs en temps réel
+
+```bash
+# Suivre l'import en cours
+tail -f logs/pipeline_*.log
+
+# Filtrer les erreurs
+grep -i "error\|erreur" logs/pipeline_*.log
+
+# Nombre de bases importées
+grep -c "OK: compta_" logs/pipeline_*.log
+```
+
+---
+
+### 💾 Backup et restauration
+
+#### Backup avant grosse opération
+
+```bash
+# Backup complet (RAW + TRANSFORM + MDM)
+mysqldump \
+    --single-transaction \
+    --routines --triggers --events \
+    raw_acd raw_dia raw_pennylane \
+    transform_compta \
+    mdm \
+    > backup_full_$(date +%Y%m%d_%H%M%S).sql
+
+# Compression
+gzip backup_full_*.sql
+```
+
+---
+
+#### Backup incrémental (raw_acd uniquement)
+
+```bash
+# Sauvegarde quotidienne de raw_acd
+mysqldump --single-transaction raw_acd > backup_raw_acd_$(date +%Y%m%d).sql
+gzip backup_raw_acd_*.sql
+
+# Rotation : conserver 7 jours
+find . -name "backup_raw_acd_*.sql.gz" -mtime +7 -delete
+```
+
+---
+
+#### Restauration
+
+```bash
+# Restaurer depuis backup
+gunzip -c backup_full_20250124.sql.gz | mysql -u root -p
+
+# Vérifier la restauration
+mysql -e "SELECT * FROM raw_acd.sync_tracking;"
+```
+
+---
+
+### 🧪 Tests et validation
+
+#### Test sur échantillon (20 bases)
+
+```bash
+# Créer branche de test
+git checkout -b test/validation-import
+
+# Modifier temporairement 02_import_raw_compta.sh
+# (ajouter | head -20 après ${ELIGIBLE_DATABASES[@]})
+
+# Lancer le test
+./run_pipeline.sh --init-only
+bash bash/raw/02_import_raw_compta.sh --full
+
+# Vérifier résultat
+mysql -e "SELECT COUNT(DISTINCT dossier_code) FROM raw_acd.histo_ligne_ecriture;"
+# Devrait retourner : 20
+
+# Revenir à main après validation
+git checkout main
+```
+
+---
+
+### 📊 Monitoring et alertes
+
+#### Script de monitoring (monitoring.sh)
+
+```bash
+#!/bin/bash
+# Vérifier l'état du dernier import
+
+LAST_STATUS=$(mysql -N -e "SELECT last_status FROM raw_acd.sync_tracking LIMIT 1;")
+LAST_DURATION=$(mysql -N -e "SELECT last_duration_sec FROM raw_acd.sync_tracking LIMIT 1;")
+
+if [ "$LAST_STATUS" != "success" ]; then
+    echo "❌ ALERTE : Dernier import en échec"
+    # Envoyer notification (email, Slack, etc.)
+    exit 1
+fi
+
+if [ "$LAST_DURATION" -gt 28800 ]; then  # Plus de 8h
+    echo "⚠️  WARNING : Import anormalement long (${LAST_DURATION}s)"
+fi
+
+echo "✅ Import OK (durée: ${LAST_DURATION}s)"
+```
+
+---
+
+### 🔍 Optimisations
+
+#### Optimiser MySQL pour imports massifs
+
+```sql
+-- Avant import complet
+SET GLOBAL innodb_buffer_pool_size = 8GB;
+SET GLOBAL innodb_log_file_size = 512MB;
+SET GLOBAL innodb_flush_log_at_trx_commit = 2;
+
+-- Après import
+SET GLOBAL innodb_flush_log_at_trx_commit = 1;
+```
+
+---
+
+#### Surveiller l'espace disque
+
+```bash
+# Vérifier avant import
+df -h /var/lib/mysql
+
+# Taille des bases
+mysql -e "
+SELECT
+    table_schema AS 'Base',
+    CONCAT(ROUND(SUM(data_length + index_length) / 1024 / 1024 / 1024, 2), ' GB') AS 'Taille'
+FROM information_schema.tables
+WHERE table_schema IN ('raw_acd', 'raw_dia', 'raw_pennylane', 'transform_compta', 'mdm')
+GROUP BY table_schema
+ORDER BY SUM(data_length + index_length) DESC;
+"
+```
+
+---
+
 ## 📁 Structure du projet
 
 ```
