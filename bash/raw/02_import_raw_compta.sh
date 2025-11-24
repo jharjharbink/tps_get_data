@@ -162,7 +162,14 @@ fi
 
 # ─── Mode INCREMENTAL: Récupérer last_sync_date UNE FOIS ──
 declare -A LAST_SYNC_DATES
+IMPORT_START_TIME=""
+
 if [ "$MODE" = "incremental" ]; then
+    # Capturer le timestamp du DÉBUT de l'import (pour éviter perte de données)
+    IMPORT_START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+    log "INFO" "Timestamp de départ de l'import : $IMPORT_START_TIME"
+    log "INFO" "⚠️  Ce timestamp sera enregistré dans sync_tracking (pas l'heure de fin)"
+
     log "INFO" "Récupération des dernières dates de synchronisation..."
     for TABLE in "${REQUIRED_TABLES[@]}"; do
         LAST_SYNC=$($MYSQL $MYSQL_OPTS -N -e "
@@ -298,12 +305,23 @@ DURATION=$((END_TIME - START_TIME))
 
 # ─── Mise à jour sync_tracking ────────────────────────────
 log "INFO" "Mise à jour du tracking..."
+
+# Déterminer la date à enregistrer selon le mode
+if [ "$MODE" = "incremental" ] && [ -n "$IMPORT_START_TIME" ]; then
+    SYNC_DATE="$IMPORT_START_TIME"
+    log "INFO" "Utilisation du timestamp de départ : $SYNC_DATE"
+    log "INFO" "⚠️  Cela garantit qu'aucune donnée insérée pendant l'import ne sera perdue"
+else
+    SYNC_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+    log "INFO" "Utilisation du timestamp actuel : $SYNC_DATE"
+fi
+
 for TABLE in "${REQUIRED_TABLES[@]}"; do
     ROW_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_acd.$TABLE")
 
     $MYSQL $MYSQL_OPTS raw_acd -e "
         UPDATE sync_tracking
-        SET last_sync_date = NOW(),
+        SET last_sync_date = '$SYNC_DATE',
             last_sync_type = '$MODE',
             rows_count = $ROW_COUNT,
             last_status = 'success',
