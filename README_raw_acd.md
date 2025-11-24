@@ -311,24 +311,47 @@ Pour mesurer les performances réelles sur votre environnement et choisir la mei
 bash bash/util/benchmark_import_acd.sh
 ```
 
-Ce script teste **9 combinaisons** (3 méthodes × 3 niveaux de parallélisme) sur 10 bases :
+Ce script teste **4 méthodes** sur 10 bases pour comparer les performances :
 
 **Méthodes testées :**
-1. **INSERT SELECT** (script actuel) - Import sélectif 6 tables
-2. **MYSQLDUMP SÉLECTIF** - Dump des 6 tables uniquement
-3. **MYSQLDUMP COMPLET** (ancien script) - Clone complet des bases
+1. **Méthode 1 : INSERT SELECT SANS batching** ⭐ **LA PLUS RAPIDE**
+   - Requête directe : `INSERT INTO raw_acd.table SELECT 'dossier', t.* FROM compta_*.table t`
+   - 1 requête par table (6 requêtes par base)
+   - Moins d'overhead réseau
+   - **✅ IMPLÉMENTÉE dans le script actuel**
 
-**Niveaux de parallélisme :**
-- P=1 (séquentiel)
-- P=2 (modéré)
-- P=3 (maximum)
+2. **Méthode 2 : INSERT SELECT AVEC batching (toutes tables)**
+   - Batching de 100k lignes pour les 6 tables
+   - Plus de requêtes mais chunks plus petits
+   - Peut être utile pour très grosses tables
+
+3. **Méthode 3 : INSERT SELECT AVEC batching (écritures seulement)**
+   - Batching uniquement pour les 4 tables d'écritures
+   - compte/journal importés en 1 fois
+
+4. **Méthode 4 : DUMP COMPLET** (ancien script - référence)
+   - Clone complet des bases avec mysqldump
+   - ❌ Incompatible avec architecture raw_acd
+   - Conservé pour référence historique
+
+**Résultat du benchmark** :
+- ✅ **Méthode 1 (INSERT SELECT sans batching) est la plus rapide**
+- Le batching n'apporte pas d'amélioration pour les volumes actuels
+- Code plus simple et maintenable
 
 Le benchmark génère un rapport détaillé (`benchmark_results_YYYYMMDD_HHMMSS.txt`) avec :
 - Tableau comparatif des temps d'exécution
 - Estimation pour 3500 bases
-- Recommandation de la configuration optimale
+- Analyse comparative entre méthodes
+- Recommandation finale
 
-**Durée du benchmark :** ~5-20 minutes selon les volumes
+**Durée du benchmark :** ~5-15 minutes selon les volumes
+
+**⚡ Optimisations appliquées dans le script actuel** :
+- ✅ Méthode 1 implémentée (INSERT SELECT sans batching)
+- ✅ Récupération `last_sync_date` UNE SEULE FOIS (au lieu de 3500+ requêtes en mode incrémental)
+- ✅ Requêtes SQL simplifiées et inline
+- ✅ Moins d'overhead et meilleure performance
 
 ---
 

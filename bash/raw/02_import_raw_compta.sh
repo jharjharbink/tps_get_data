@@ -160,114 +160,96 @@ if [ "$MODE" = "full" ]; then
     log "SUCCESS" "Tables vidées"
 fi
 
-# ─── Fonction: Importer une base (appelée en parallèle) ───
+# ─── Mode INCREMENTAL: Récupérer last_sync_date UNE FOIS ──
+declare -A LAST_SYNC_DATES
+if [ "$MODE" = "incremental" ]; then
+    log "INFO" "Récupération des dernières dates de synchronisation..."
+    for TABLE in "${REQUIRED_TABLES[@]}"; do
+        LAST_SYNC=$($MYSQL $MYSQL_OPTS -N -e "
+            SELECT IFNULL(last_sync_date, '2000-01-01 00:00:00')
+            FROM raw_acd.sync_tracking
+            WHERE table_name = '$TABLE'
+        " 2>/dev/null || echo "2000-01-01 00:00:00")
+        LAST_SYNC_DATES[$TABLE]="$LAST_SYNC"
+        log "INFO" "  - $TABLE: $LAST_SYNC"
+    done
+fi
+
+# ─── Fonction: Importer une base (optimisée selon Méthode 1 benchmark) ───
 import_one_database() {
     local DB="$1"
-    local MODE="$2"
     local DOSSIER_CODE="${DB#compta_}"  # Extraire "00123" de "compta_00123"
 
-    # Variables d'environnement (passées par xargs)
-    local ACD_HOST="$3"
-    local ACD_PORT="$4"
-    local ACD_USER="$5"
-    local ACD_PASS="$6"
-    local LOCAL_USER="$7"
-    local LOCAL_PASS="$8"
-    local MYSQL="$9"
-    local SINCE_DATE="${10}"  # Date pour mode --since
-
-    # Import pour chaque table
+    # Import pour chaque table (approche directe comme dans le benchmark)
     for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
 
-        # Construire la requête selon le mode
+        # Déterminer le champ date selon la table
+        local DATE_FIELD=""
+        if [[ "$TABLE" == histo_* ]]; then
+            DATE_FIELD="HE_DATE_SAI"
+        elif [[ "$TABLE" == "ligne_ecriture" ]] || [[ "$TABLE" == "ecriture" ]]; then
+            DATE_FIELD="ECR_DATE_SAI"
+        fi
+
+        # Construire la requête selon le mode (simplifié)
+        local QUERY=""
         if [ "$MODE" = "full" ]; then
-            # Mode FULL: INSERT simple (tables déjà vidées)
-            QUERY="
-                INSERT INTO raw_acd.$TABLE
-                SELECT '$DOSSIER_CODE' as dossier_code, t.*
-                FROM \`$DB\`.\`$TABLE\` t;
-            "
+            # Mode FULL: INSERT simple (tables déjà vidées) - Comme benchmark Méthode 1
+            QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t;"
+
         elif [ "$MODE" = "since" ]; then
-            # Mode SINCE: Import depuis une date spécifique
-            # Filtrer selon la date de saisie
-            if [[ "$TABLE" == histo_* ]]; then
-                DATE_FIELD="HE_DATE_SAI"
-            elif [[ "$TABLE" == "compte" ]] || [[ "$TABLE" == "journal" ]]; then
-                # Pas de filtre date pour compte et journal en mode since
-                QUERY="
-                    INSERT INTO raw_acd.$TABLE
-                    SELECT '$DOSSIER_CODE' as dossier_code, t.*
-                    FROM \`$DB\`.\`$TABLE\` t
-                    ON DUPLICATE KEY UPDATE
-                        dossier_code = VALUES(dossier_code);
-                "
+            # Mode SINCE: Avec filtre date
+            if [ -n "$DATE_FIELD" ]; then
+                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t WHERE t.$DATE_FIELD >= '$SINCE_DATE' ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             else
-                DATE_FIELD="ECR_DATE_SAI"
+                # compte/journal: pas de filtre date
+                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             fi
 
-            if [[ "$TABLE" != "compte" ]] && [[ "$TABLE" != "journal" ]]; then
-                QUERY="
-                    INSERT INTO raw_acd.$TABLE
-                    SELECT '$DOSSIER_CODE' as dossier_code, t.*
-                    FROM \`$DB\`.\`$TABLE\` t
-                    WHERE t.$DATE_FIELD >= '$SINCE_DATE'
-                    ON DUPLICATE KEY UPDATE
-                        dossier_code = VALUES(dossier_code);
-                "
-            fi
-        else
-            # Mode INCREMENTAL: ON DUPLICATE KEY UPDATE
-            # Récupérer last_sync_date
-            LAST_SYNC=$($MYSQL -u "$LOCAL_USER" -p"$LOCAL_PASS" -N -e "
-                SELECT IFNULL(last_sync_date, '2000-01-01 00:00:00')
-                FROM raw_acd.sync_tracking
-                WHERE table_name = '$TABLE'
-            " 2>/dev/null)
+        else  # incremental
+            # Mode INCREMENTAL: Récupérer last_sync depuis variable d'environnement
+            local LAST_SYNC="${SYNC_DATE_histo_ligne_ecriture}"  # Défaut
+            case "$TABLE" in
+                histo_ligne_ecriture) LAST_SYNC="${SYNC_DATE_histo_ligne_ecriture}" ;;
+                histo_ecriture)       LAST_SYNC="${SYNC_DATE_histo_ecriture}" ;;
+                ligne_ecriture)       LAST_SYNC="${SYNC_DATE_ligne_ecriture}" ;;
+                ecriture)             LAST_SYNC="${SYNC_DATE_ecriture}" ;;
+                compte)               LAST_SYNC="${SYNC_DATE_compte}" ;;
+                journal)              LAST_SYNC="${SYNC_DATE_journal}" ;;
+            esac
 
-            # Filtrer selon la date de saisie
-            if [[ "$TABLE" == histo_* ]]; then
-                DATE_FIELD="HE_DATE_SAI"
-            elif [[ "$TABLE" == "compte" ]] || [[ "$TABLE" == "journal" ]]; then
-                # Pas de filtre date pour compte et journal en mode incremental
-                QUERY="
-                    INSERT INTO raw_acd.$TABLE
-                    SELECT '$DOSSIER_CODE' as dossier_code, t.*
-                    FROM \`$DB\`.\`$TABLE\` t
-                    ON DUPLICATE KEY UPDATE
-                        dossier_code = VALUES(dossier_code);
-                "
+            if [ -n "$DATE_FIELD" ]; then
+                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t WHERE t.$DATE_FIELD > '$LAST_SYNC' ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             else
-                DATE_FIELD="ECR_DATE_SAI"
-            fi
-
-            if [[ "$TABLE" != "compte" ]] && [[ "$TABLE" != "journal" ]]; then
-                QUERY="
-                    INSERT INTO raw_acd.$TABLE
-                    SELECT '$DOSSIER_CODE' as dossier_code, t.*
-                    FROM \`$DB\`.\`$TABLE\` t
-                    WHERE t.$DATE_FIELD > '$LAST_SYNC'
-                    ON DUPLICATE KEY UPDATE
-                        dossier_code = VALUES(dossier_code);
-                "
+                # compte/journal: pas de filtre date
+                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             fi
         fi
 
-        # Exécuter l'import
+        # Exécuter l'import (simplifié, set -e gère les erreurs)
         $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
-            --compress -e "$QUERY" 2>/dev/null
-
-        if [ $? -ne 0 ]; then
+            --compress -e "$QUERY" 2>/dev/null || {
             echo "ERREUR: $DB - $TABLE"
             return 1
-        fi
+        }
     done
 
     echo "OK: $DB"
-    return 0
 }
 
-# Exporter la fonction pour xargs
+# Exporter la fonction et les variables pour xargs
 export -f import_one_database
+export MODE SINCE_DATE
+export ACD_HOST ACD_PORT ACD_USER ACD_PASS
+export MYSQL
+
+# Exporter les dates de sync en mode incremental
+if [ "$MODE" = "incremental" ]; then
+    for TABLE in "${REQUIRED_TABLES[@]}"; do
+        VAR_NAME="SYNC_DATE_${TABLE}"
+        export "${VAR_NAME}=${LAST_SYNC_DATES[$TABLE]}"
+    done
+fi
 
 # ─── Créer fichier temporaire avec liste des bases ────────
 TMP_BDDS_FILE="/tmp/acd_eligible_bases_$$.txt"
@@ -283,7 +265,7 @@ COUNTER=0
 BATCH_SIZE=10
 
 cat "$TMP_BDDS_FILE" | xargs -P "$PARALLEL_JOBS" -I {} bash -c \
-    "import_one_database '{}' '$MODE' '$ACD_HOST' '$ACD_PORT' '$ACD_USER' '$ACD_PASS' '$LOCAL_USER' '$LOCAL_PASS' '$MYSQL' '$SINCE_DATE'" \
+    "import_one_database '{}'" \
     2>&1 | while read line; do
         echo "[$(date '+%H:%M:%S')] $line"
 

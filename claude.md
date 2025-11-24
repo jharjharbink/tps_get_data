@@ -85,13 +85,16 @@ Actuellement, nous sommes en phase de **validation de la couche RAW** :
 **Performance** :
 - Import séquentiel (machine source avec 1 CPU - pas de parallélisme possible)
 - Compression MySQL : `--compress`
+- **⚡ Optimisation benchmark** : Méthode 1 (INSERT SELECT sans batching) - la plus rapide
+- **⚡ Récupération last_sync_date** : UNE SEULE FOIS (au lieu de 3500+ requêtes)
 - Estimation : ~4-6h pour 3500 bases
 
-**Points à valider** :
+**Points validés** :
 - ✅ Structure des tables (partitionnement, clés primaires)
-- ✅ Mécanisme d'import full
-- 🔄 Mécanisme d'import incrémental (à tester)
-- 🔄 Performance (benchmark en cours)
+- ✅ Mécanisme d'import full (optimisé selon benchmark)
+- ✅ Optimisation performance (Méthode 1 - INSERT SELECT sans batching)
+- ✅ Suppression overhead : last_sync_date récupéré 1x au lieu de 3500x
+- 🔄 Mécanisme d'import incrémental (à tester en prod)
 - 🔄 Gestion des erreurs et reprises
 - ❌ Tracking par dossier (à implémenter)
 
@@ -167,6 +170,8 @@ bash bash/raw/02c_cleanup_acd.sh --stats # Afficher statistiques
 ### Benchmark
 ```bash
 bash bash/util/benchmark_import_acd.sh   # Tester méthodes d'import sur 10 bases
+# ✅ RÉSULTAT : Méthode 1 (INSERT SELECT sans batching) est la plus rapide
+# ✅ APPLIQUÉ : Script optimisé avec Méthode 1
 ```
 
 ---
@@ -175,10 +180,11 @@ bash bash/util/benchmark_import_acd.sh   # Tester méthodes d'import sur 10 base
 
 ### Problèmes à résoudre avant validation
 
-1. **Import ACD long (~4-6h pour 3500 bases)**
+1. **Import ACD long (~4-6h pour 3500 bases)** ✅ OPTIMISÉ
    - Source ACD avec 1 CPU (nproc=1) → pas de parallélisme possible
-   - Solution actuelle : Import séquentiel optimisé avec barre de progression
-   - À tester : Benchmark pour confirmer les performances
+   - ✅ Benchmark réalisé : Méthode 1 (INSERT SELECT sans batching) est la plus rapide
+   - ✅ Optimisation appliquée : Récupération last_sync_date UNE SEULE FOIS
+   - ✅ Code simplifié : Requêtes SQL inline, moins d'overhead
 
 2. **Horodatage global vs par dossier**
    - Actuellement : `last_sync_date` mise à jour en fin d'import
@@ -259,9 +265,11 @@ ORDER BY HE_ANNEE;
 
 ### Phase 1 : Stabilisation RAW (EN COURS)
 - ✅ Import ACD centralisé (raw_acd)
-- 🔄 Validation import incrémental
-- 🔄 Optimisation performances
-- ⏳ Tests sur 3500 bases
+- ✅ Optimisation performances (benchmark Méthode 1 appliqué)
+- ✅ Récupération last_sync_date optimisée (1 requête au lieu de 3500+)
+- ✅ Simplification code import (approche directe comme benchmark)
+- 🔄 Validation import incrémental en prod
+- ⏳ Tests sur 3500 bases en production
 
 ### Phase 2 : Adaptation TRANSFORM
 1. **Adapter les procédures** pour utiliser raw_acd au lieu de boucler sur compta_*

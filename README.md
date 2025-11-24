@@ -190,6 +190,8 @@ bash bash/raw/02c_cleanup_acd.sh --stats
 bash bash/util/benchmark_import_acd.sh
 ```
 
+**Résultat** : ✅ Méthode 1 (INSERT SELECT sans batching) est la plus rapide - **implémentée dans le script actuel**
+
 ---
 
 ## 📁 Structure du projet
@@ -308,6 +310,8 @@ ORDER BY HE_ANNEE;
 **Performance** :
 - Import séquentiel (source ACD 1 CPU - pas de parallélisme)
 - Compression MySQL : `--compress`
+- **⚡ Optimisé** : Méthode 1 du benchmark (INSERT SELECT sans batching)
+- **⚡ last_sync_date** : récupéré 1x au lieu de 3500x en mode incrémental
 - Estimation : ~4-6h pour 3500 bases
 
 ---
@@ -377,8 +381,8 @@ Rotation automatique : conservation de 30 jours
 
 ### Phase 1 : Stabilisation RAW (EN COURS)
 - ✅ Import ACD centralisé (raw_acd)
-- 🔄 Validation import incrémental
-- 🔄 Optimisation performances
+- ✅ Optimisation performances (benchmark Méthode 1 appliqué)
+- 🔄 Validation import incrémental en production
 - ⏳ Tests sur 3500 bases
 
 ### Phase 2 : Adaptation TRANSFORM

@@ -64,8 +64,11 @@ test_method_insert_select_no_batch() {
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
 
-    # Modifier le fichier SQL pour utiliser la base de test
-    sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/" "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | $MYSQL $MYSQL_OPTS
+    # Créer un fichier SQL temporaire avec le bon nom de base
+    TMP_SQL="/tmp/benchmark_${PREFIX}_$$.sql"
+    cat "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/g" > "$TMP_SQL"
+    $MYSQL $MYSQL_OPTS < "$TMP_SQL"
+    rm -f "$TMP_SQL"
 
     START=$(date +%s)
 
@@ -129,8 +132,11 @@ test_method_insert_batched_all() {
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
 
-    # Modifier le fichier SQL pour utiliser la base de test
-    sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/" "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | $MYSQL $MYSQL_OPTS
+    # Créer un fichier SQL temporaire avec le bon nom de base
+    TMP_SQL="/tmp/benchmark_${PREFIX}_$$.sql"
+    cat "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/g" > "$TMP_SQL"
+    $MYSQL $MYSQL_OPTS < "$TMP_SQL"
+    rm -f "$TMP_SQL"
 
     START=$(date +%s)
 
@@ -209,8 +215,11 @@ test_method_insert_batched_ecritures() {
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
 
-    # Modifier le fichier SQL pour utiliser la base de test
-    sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/" "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | $MYSQL $MYSQL_OPTS
+    # Créer un fichier SQL temporaire avec le bon nom de base
+    TMP_SQL="/tmp/benchmark_${PREFIX}_$$.sql"
+    cat "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" | sed "s/USE raw_acd;/USE ${PREFIX}_raw_acd;/g" > "$TMP_SQL"
+    $MYSQL $MYSQL_OPTS < "$TMP_SQL"
+    rm -f "$TMP_SQL"
 
     START=$(date +%s)
 
