@@ -18,7 +18,7 @@ DATADIR=$($MYSQL $MYSQL_OPTS -N -e "SELECT @@datadir;")
 log "INFO" "Répertoire MySQL : $DATADIR"
 
 # ============================================================
-# FONCTION DE SUPPRESSION ULTRA-RAPIDE
+# FONCTION DE SUPPRESSION DOUCE (SQL uniquement)
 # ============================================================
 delete_schemas_fast() {
     local PATTERN="$1"
@@ -38,12 +38,12 @@ delete_schemas_fast() {
     fi
 
     COUNT=$(echo "$DBS" | wc -l)
-    log "WARNING" "$COUNT bases ${PATTERN} trouvées, suppression rapide..."
+    log "WARNING" "$COUNT bases ${PATTERN} trouvées, suppression en cours..."
 
     START=$(date +%s)
 
-    # 1. DROP DATABASE d'abord (nettoyage métadonnées + partitions)
-    TMP_SQL="/tmp/drop_physical_${PATTERN}_$$.sql"
+    # DROP DATABASE uniquement (MySQL gère automatiquement les partitions et fichiers)
+    TMP_SQL="/tmp/drop_soft_${PATTERN}_$$.sql"
     echo "SET FOREIGN_KEY_CHECKS=0;" > "$TMP_SQL"
 
     while read -r DB; do
@@ -54,13 +54,6 @@ delete_schemas_fast() {
 
     $MYSQL $MYSQL_OPTS < "$TMP_SQL"
     rm -f "$TMP_SQL"
-
-    # 2. Suppression physique des dossiers restants (fichiers orphelins)
-    while read -r DB; do
-        if [ -d "${DATADIR}/${DB}" ]; then
-            rm -rf "${DATADIR}/${DB}"
-        fi
-    done <<< "$DBS"
 
     END=$(date +%s)
     log "SUCCESS" "Bases ${PATTERN} supprimées en $((END - START))s"
@@ -76,16 +69,11 @@ delete_schemas_fast "mart_%"
 
 # Schéma mdm
 log "INFO" "Suppression du schéma mdm..."
-# 1. DROP DATABASE d'abord (métadonnées)
 $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS mdm;" || true
-# 2. Suppression physique (fichiers orphelins)
-if [ -d "${DATADIR}/mdm" ]; then
-    rm -rf "${DATADIR}/mdm"
-fi
 log "SUCCESS" "Schéma mdm supprimé"
 
 # ============================================================
-# FLUSH MySQL (obligatoire après suppression physique)
+# FLUSH MySQL (recommandé après suppressions massives)
 # ============================================================
 log "INFO" "Exécution des FLUSH MySQL..."
 $MYSQL $MYSQL_OPTS -e "FLUSH LOGS;"

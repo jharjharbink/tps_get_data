@@ -200,30 +200,60 @@ import_one_database() {
     local DB="$1"
     local DOSSIER_CODE="${DB#compta_}"  # Extraire "00123" de "compta_00123"
 
-    # Import pour chaque table (approche directe comme dans le benchmark)
+    # Import pour chaque table avec colonnes explicites
     for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
 
-        # Déterminer le champ date selon la table
+        # Déterminer les colonnes et le champ date selon la table
+        local COLUMNS=""
+        local SELECT_COLS=""
         local DATE_FIELD=""
-        if [[ "$TABLE" == histo_* ]]; then
-            DATE_FIELD="HE_DATE_SAI"
-        elif [[ "$TABLE" == "ligne_ecriture" ]] || [[ "$TABLE" == "ecriture" ]]; then
-            DATE_FIELD="ECR_DATE_SAI"
-        fi
 
-        # Construire la requête selon le mode (simplifié)
+        case "$TABLE" in
+            histo_ligne_ecriture)
+                COLUMNS="(dossier_code, HLE_CODE, HE_CODE, CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HLE_LIBELLE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE)"
+                SELECT_COLS="'$DOSSIER_CODE', HLE_CODE, HE_CODE, CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HLE_LIBELLE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE"
+                DATE_FIELD="HE_DATE_SAI"
+                ;;
+            histo_ecriture)
+                COLUMNS="(dossier_code, HE_CODE, HE_LIBELLE, HE_DATE_SAI, HE_DATE_ECR, HE_ANNEE, HE_MOIS, JNL_CODE, HE_VALID)"
+                SELECT_COLS="'$DOSSIER_CODE', HE_CODE, HE_LIBELLE, HE_DATE_SAI, HE_DATE_ECR, HE_ANNEE, HE_MOIS, JNL_CODE, HE_VALID"
+                DATE_FIELD="HE_DATE_SAI"
+                ;;
+            ligne_ecriture)
+                COLUMNS="(dossier_code, LE_CODE, ECR_CODE, CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, LE_LIBELLE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE)"
+                SELECT_COLS="'$DOSSIER_CODE', LE_CODE, ECR_CODE, CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, LE_LIBELLE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE"
+                DATE_FIELD="ECR_DATE_SAI"
+                ;;
+            ecriture)
+                COLUMNS="(dossier_code, ECR_CODE, ECR_LIBELLE, ECR_DATE_SAI, ECR_DATE_ECR, ECR_ANNEE, ECR_MOIS, JNL_CODE, ECR_VALID)"
+                SELECT_COLS="'$DOSSIER_CODE', ECR_CODE, ECR_LIBELLE, ECR_DATE_SAI, ECR_DATE_ECR, ECR_ANNEE, ECR_MOIS, JNL_CODE, ECR_VALID"
+                DATE_FIELD="ECR_DATE_SAI"
+                ;;
+            compte)
+                COLUMNS="(dossier_code, CPT_CODE, CPT_LIBELLE, CPT_TYPE)"
+                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, CPT_LIBELLE, CPT_TYPE"
+                DATE_FIELD=""
+                ;;
+            journal)
+                COLUMNS="(dossier_code, JNL_CODE, JNL_LIBELLE, JNL_TYPE)"
+                SELECT_COLS="'$DOSSIER_CODE', JNL_CODE, JNL_LIBELLE, JNL_TYPE"
+                DATE_FIELD=""
+                ;;
+        esac
+
+        # Construire la requête selon le mode
         local QUERY=""
         if [ "$MODE" = "full" ]; then
-            # Mode FULL: INSERT simple (tables déjà vidées) - Comme benchmark Méthode 1
-            QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t;"
+            # Mode FULL: INSERT simple (tables déjà vidées)
+            QUERY="INSERT INTO raw_acd.$TABLE $COLUMNS SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\`;"
 
         elif [ "$MODE" = "since" ]; then
             # Mode SINCE: Avec filtre date
             if [ -n "$DATE_FIELD" ]; then
-                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t WHERE t.$DATE_FIELD >= '$SINCE_DATE' ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
+                QUERY="INSERT INTO raw_acd.$TABLE $COLUMNS SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\` WHERE $DATE_FIELD >= '$SINCE_DATE' ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             else
                 # compte/journal: pas de filtre date
-                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
+                QUERY="INSERT INTO raw_acd.$TABLE $COLUMNS SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\` ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             fi
 
         else  # incremental
@@ -239,10 +269,10 @@ import_one_database() {
             esac
 
             if [ -n "$DATE_FIELD" ]; then
-                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t WHERE t.$DATE_FIELD > '$LAST_SYNC' ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
+                QUERY="INSERT INTO raw_acd.$TABLE $COLUMNS SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\` WHERE $DATE_FIELD > '$LAST_SYNC' ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             else
                 # compte/journal: pas de filtre date
-                QUERY="INSERT INTO raw_acd.$TABLE SELECT '$DOSSIER_CODE' as dossier_code, t.* FROM \`$DB\`.\`$TABLE\` t ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
+                QUERY="INSERT INTO raw_acd.$TABLE $COLUMNS SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\` ON DUPLICATE KEY UPDATE dossier_code = VALUES(dossier_code);"
             fi
         fi
 
