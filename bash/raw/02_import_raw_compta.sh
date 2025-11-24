@@ -10,6 +10,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/logging.sh"
 
+# ─── Bases à exclure ───────────────────────────────────────
+EXCLUDED_DATABASES=("compta_00000" "compta_zz")
+
+# ─── Tables requises pour import ──────────────────────────
+REQUIRED_TABLES=(
+    "histo_ligne_ecriture"
+    "histo_ecriture"
+    "ligne_ecriture"
+    "ecriture"
+    "compte"
+    "journal"
+)
+
 # ─── Arguments ─────────────────────────────────────────────
 MODE="full"  # Par défaut: import complet
 PARALLEL_JOBS=1  # Pas de parallélisme pour protéger la source ACD
@@ -233,12 +246,16 @@ import_one_database() {
             fi
         fi
 
-        # Exécuter l'import (simplifié, set -e gère les erreurs)
-        $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
-            --compress -e "$QUERY" 2>/dev/null || {
+        # Exécuter l'import (capturer stderr dans un fichier temporaire)
+        ERROR_FILE="/tmp/mysql_error_${DB}_${TABLE}_$$.log"
+        if ! $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
+            --compress -e "$QUERY" 2>"$ERROR_FILE"; then
             echo "ERREUR: $DB - $TABLE"
+            echo "Détails: $(cat "$ERROR_FILE")"
+            rm -f "$ERROR_FILE"
             return 1
-        }
+        fi
+        rm -f "$ERROR_FILE"
     done
 
     echo "OK: $DB"
