@@ -1,0 +1,44 @@
+════════════════════════════════════════════════════════════════
+  BENCHMARK IMPORT ACD - RÉSULTATS
+════════════════════════════════════════════════════════════════
+
+Configuration du test:
+  - Nombre de bases: 9
+  - Serveur source: 192.168.20.10:3308
+  - Date: 2025-11-24 01:30:44
+  - Parallélisme: P=1 (séquentiel)
+  - Batchs testés: 50 000 et 100 000 lignes
+  - Bases:  compta_assculfort compta_cashparis compta_ctabilan compta_formnf compta_linkuma compta_movitex compta_proc1 compta_sasauxsecr compta_stli 
+
+════════════════════════════════════════════════════════
+RÉSULTATS DÉTAILLÉS
+════════════════════════════════════════════════════════
+
+M1  : M1|3|34
+M1-2: M1-2|6|34
+M1-3: M1-3|5|34
+M2  : M2|6|34
+M2-2: M2-2|6|34
+M2-3: M2-3|5|34
+M3  : M3|6|34
+M3-2: M3-2|6|34
+M3-3: M3-3|5|34
+M4  : M4|453|2439 tables|9108592 lignes
+
+════════════════════════════════════════════════════════════════
+  RÉCAPITULATIF DES DURÉES (en secondes)
+════════════════════════════════════════════════════════════════
+
+| ID   | Méthode                                    | Batch       | Durée (s) |
+|------|--------------------------------------------|-------------|-----------|
+| M1   | INSERT SELECT SANS batching                | Aucun       | 3 |
+| M1-2 | Méthode 1 - batching ÉCRITURES             | 50 000      | 6 |
+| M1-3 | Méthode 1 - batching ÉCRITURES             | 100 000     | 5 |
+| M2   | Méthode 2 - batching TOUTES tables         | 50 000      | 6 |
+| M2-2 | Méthode 2 - batching TOUTES tables (bis)   | 50 000      | 6 |
+| M2-3 | Méthode 2 - batching TOUTES tables         | 100 000     | 5 |
+| M3   | Méthode 3 - batching ÉCRITURES             | 50 000      | 6 |
+| M3-2 | Méthode 3 - batching ÉCRITURES (bis)       | 50 000      | 6 |
+| M3-3 | Méthode 3 - batching ÉCRITURES             | 100 000     | 5 |
+| M4   | DUMP COMPLET (référence)                   | N/A         | 453 |
+

@@ -1,80 +1,206 @@
 #!/bin/bash
 # ============================================================
-# BENCHMARK IMPORT ACD - Test de performance
-# Compare différentes méthodes d'import pour 10 bases
-# Génère un rapport détaillé des temps d'exécution
+# BENCHMARK IMPORT ACD - Test de performance (10 scénarios)
+#
+# Méthode 1 : INSERT SELECT SANS batching
+#   - M1   : sans batching
+#   - M1-2 : batching 50k sur histo_ligne_ecriture / histo_ecriture / ligne_ecriture / ecriture
+#   - M1-3 : batching 100k sur ces mêmes 4 tables
+#
+# Méthode 2 : INSERT SELECT AVEC batching sur TOUTES les tables
+#   - M2   : batching 50k
+#   - M2-2 : batching 50k (2e run)
+#   - M2-3 : batching 100k
+#
+# Méthode 3 : INSERT SELECT AVEC batching sur tables d'écritures uniquement
+#   - M3   : batching 50k
+#   - M3-2 : batching 50k (2e run)
+#   - M3-3 : batching 100k
+#
+# Méthode 4 : DUMP COMPLET (référence)
+#
+# Parallélisme : P=1 (séquentiel)
+# Bases testées : 9 bases lourdes ACD
 # ============================================================
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/logging.sh"
 
-# ─── Configuration du benchmark ────────────────────────────
-NB_BASES_TEST=10
-BATCH_SIZE=100000  # Batching pour tables d'écritures
+# ─── Configuration générale ─────────────────────────────────
+
+BATCH_50K=50000
+BATCH_100K=100000
 RESULTS_FILE="benchmark_results_$(date +%Y%m%d_%H%M%S).txt"
 
-log_section "🔬 BENCHMARK IMPORT ACD"
+# Bases lourdes à utiliser
+TEST_DATABASES="
+compta_assculfort
+compta_cashparis
+compta_ctabilan
+compta_formnf
+compta_linkuma
+compta_movitex
+compta_proc1
+compta_sasauxsecr
+compta_stli
+"
 
-# ─── Récupérer N bases compta_* pour le test ──────────────
-log "INFO" "Sélection de $NB_BASES_TEST bases pour le benchmark..."
+NB_FOUND=$(echo "$TEST_DATABASES" | sed '/^$/d' | wc -l)
 
-TEST_DATABASES=$($MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" --skip-column-names -e "
-    SELECT schema_name
-    FROM information_schema.schemata
-    WHERE schema_name LIKE 'compta_%'
-    AND schema_name NOT IN ('compta_000000', 'compta_zz')
-    LIMIT $NB_BASES_TEST
-" | grep "compta_")
+log_section "🔬 BENCHMARK IMPORT ACD - 10 tests (P=1, bases lourdes)"
+log "INFO" "Nombre de bases utilisées : $NB_FOUND"
+echo "$TEST_DATABASES" | sed '/^$/d' | while read -r db; do echo "  - $db"; done
 
-if [ -z "$TEST_DATABASES" ]; then
-    log "ERROR" "Aucune base trouvée pour le test"
-    exit 1
-fi
+# ─── SQL d'index et de partitions (config) ──────────────────
 
-NB_FOUND=$(echo "$TEST_DATABASES" | wc -l)
-log "INFO" "$NB_FOUND bases sélectionnées pour le benchmark"
-echo "$TEST_DATABASES" | while read db; do echo "  - $db"; done
+SQL_INDEXES="
+ALTER TABLE histo_ligne_ecriture
+    ADD KEY idx_date_sai (HE_DATE_SAI),
+    ADD KEY idx_compte (CPT_CODE),
+    ADD KEY idx_journal (JNL_CODE);
 
-# Créer le fichier de résultats
-cat > "$RESULTS_FILE" << 'EOF'
+ALTER TABLE histo_ecriture
+    ADD KEY idx_date_sai (HE_DATE_SAI),
+    ADD KEY idx_date_ecr (HE_DATE_ECR);
+
+ALTER TABLE ligne_ecriture
+    ADD KEY idx_date_sai (ECR_DATE_SAI),
+    ADD KEY idx_compte (CPT_CODE),
+    ADD KEY idx_journal (JNL_CODE);
+
+ALTER TABLE ecriture
+    ADD KEY idx_date_sai (ECR_DATE_SAI),
+    ADD KEY idx_date_ecr (ECR_DATE_ECR);
+
+ALTER TABLE compte
+    ADD KEY idx_type (CPT_TYPE);
+
+ALTER TABLE journal
+    ADD KEY idx_type (JNL_TYPE);
+"
+
+SQL_PARTITIONS="
+ALTER TABLE histo_ligne_ecriture
+    PARTITION BY RANGE (HE_ANNEE) (
+        PARTITION p2020 VALUES LESS THAN (2021),
+        PARTITION p2021 VALUES LESS THAN (2022),
+        PARTITION p2022 VALUES LESS THAN (2023),
+        PARTITION p2023 VALUES LESS THAN (2024),
+        PARTITION p2024 VALUES LESS THAN (2025),
+        PARTITION p2025 VALUES LESS THAN (2026),
+        PARTITION p_future VALUES LESS THAN MAXVALUE
+    );
+
+ALTER TABLE histo_ecriture
+    PARTITION BY RANGE (HE_ANNEE) (
+        PARTITION p2020 VALUES LESS THAN (2021),
+        PARTITION p2021 VALUES LESS THAN (2022),
+        PARTITION p2022 VALUES LESS THAN (2023),
+        PARTITION p2023 VALUES LESS THAN (2024),
+        PARTITION p2024 VALUES LESS THAN (2025),
+        PARTITION p2025 VALUES LESS THAN (2026),
+        PARTITION p_future VALUES LESS THAN MAXVALUE
+    );
+
+ALTER TABLE ligne_ecriture
+    PARTITION BY RANGE (ECR_ANNEE) (
+        PARTITION p2020 VALUES LESS THAN (2021),
+        PARTITION p2021 VALUES LESS THAN (2022),
+        PARTITION p2022 VALUES LESS THAN (2023),
+        PARTITION p2023 VALUES LESS THAN (2024),
+        PARTITION p2024 VALUES LESS THAN (2025),
+        PARTITION p2025 VALUES LESS THAN (2026),
+        PARTITION p_future VALUES LESS THAN MAXVALUE
+    );
+
+ALTER TABLE ecriture
+    PARTITION BY RANGE (ECR_ANNEE) (
+        PARTITION p2020 VALUES LESS THAN (2021),
+        PARTITION p2021 VALUES LESS THAN (2022),
+        PARTITION p2022 VALUES LESS THAN (2023),
+        PARTITION p2023 VALUES LESS THAN (2024),
+        PARTITION p2024 VALUES LESS THAN (2025),
+        PARTITION p2025 VALUES LESS THAN (2026),
+        PARTITION p_future VALUES LESS THAN MAXVALUE
+    );
+"
+
+create_indexes() {
+    local DB="$1"
+
+    local START_IDX END_IDX DURATION_IDX
+    START_IDX=$(date +%s)
+
+    echo "$SQL_INDEXES"    | $MYSQL $MYSQL_OPTS "$DB"
+    echo "$SQL_PARTITIONS" | $MYSQL $MYSQL_OPTS "$DB"
+
+    END_IDX=$(date +%s)
+    DURATION_IDX=$((END_IDX - START_IDX))
+
+    log "INFO" "[${DB}] Création index/partitions : ${DURATION_IDX}s"
+
+    echo "$DURATION_IDX"
+}
+
+# ─── Fichier de résultats ───────────────────────────────────
+
+cat > "$RESULTS_FILE" << EOF
 ════════════════════════════════════════════════════════════════
   BENCHMARK IMPORT ACD - RÉSULTATS
 ════════════════════════════════════════════════════════════════
 
 Configuration du test:
+  - Nombre de bases: $NB_FOUND
+  - Serveur source: $ACD_HOST:$ACD_PORT
+  - Date: $(date '+%Y-%m-%d %H:%M:%S')
+  - Parallélisme: P=1 (séquentiel)
+  - Batchs testés: 50 000 et 100 000 lignes
+  - Bases: $(echo "$TEST_DATABASES" | tr '\n' ' ' | sed 's/  */ /g')
 EOF
 
-echo "  - Nombre de bases: $NB_FOUND" >> "$RESULTS_FILE"
-echo "  - Serveur source: $ACD_HOST:$ACD_PORT" >> "$RESULTS_FILE"
-echo "  - Date: $(date '+%Y-%m-%d %H:%M:%S')" >> "$RESULTS_FILE"
-echo "  - Parallélisme: P=1 (machine source 1 CPU)" >> "$RESULTS_FILE"
-echo "  - Batch size: $BATCH_SIZE lignes (tables écritures)" >> "$RESULTS_FILE"
 echo "" >> "$RESULTS_FILE"
 
-# ─── MÉTHODE 1: INSERT SELECT standard SANS batching ──────
-test_method_insert_select_no_batch() {
-    local METHOD_NAME="INSERT_NO_BATCH"
-    local PREFIX="test_m1"
+# ─── Helpers communs ────────────────────────────────────────
 
-    log_section "Test Méthode 1: INSERT SELECT SANS batching (script actuel)"
-
-    # Créer schéma de test
+create_schema_raw_acd() {
+    local PREFIX="$1"
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
     $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS ${PREFIX}_raw_acd < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+    $MYSQL $MYSQL_OPTS "${PREFIX}_raw_acd" < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+}
 
+count_rows_raw_acd() {
+    local PREFIX="$1"
+    $MYSQL $MYSQL_OPTS -N -e "
+        SELECT COALESCE(SUM(table_rows),0)
+        FROM information_schema.tables
+        WHERE table_schema = '${PREFIX}_raw_acd'
+    " || echo "0"
+}
+
+# ────────────────────────────────────────────────────────────
+# MÉTHODE 1 : INSERT SELECT SANS batching
+# ────────────────────────────────────────────────────────────
+test_method_insert_select_no_batch() {
+    local METHOD_NAME="$1"   # M1
+    local PREFIX="$2"        # test_m1
+
+    log_section "Test $METHOD_NAME : INSERT SELECT SANS batching"
+
+    create_schema_raw_acd "$PREFIX"
+
+    local START IMPORT_END END
     START=$(date +%s)
 
-    # Fonction d'import standard SANS batching
     import_no_batch() {
         local DB="$1"
         local DOSSIER_CODE="${DB#compta_}"
         local PREFIX="$2"
 
         for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
-            # INSERT SELECT complet (toute la table d'un coup - SANS batching)
             $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
                 --compress -e "
                 INSERT INTO ${PREFIX}_raw_acd.$TABLE
@@ -86,46 +212,50 @@ test_method_insert_select_no_batch() {
     }
 
     export -f import_no_batch
-    export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL
+    export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL MYSQL_OPTS
 
-    # Import séquentiel (P=1)
     for DB in $TEST_DATABASES; do
         import_no_batch "$DB" "$PREFIX"
     done
 
+    IMPORT_END=$(date +%s)
+
+    local IDX_DURATION
+    IDX_DURATION=$(create_indexes "${PREFIX}_raw_acd")
+
     END=$(date +%s)
-    DURATION=$((END - START))
 
-    # Compter les lignes importées
-    TOTAL_ROWS=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT SUM(table_rows)
-        FROM information_schema.tables
-        WHERE table_schema = '${PREFIX}_raw_acd'
-    " || echo "0")
+    local IMPORT_DURATION=$((IMPORT_END - START))
+    local TOTAL_DURATION=$((END - START))
 
-    log "INFO" "Durée: ${DURATION}s - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
+    local TOTAL_ROWS
+    TOTAL_ROWS=$(count_rows_raw_acd "$PREFIX")
 
-    # Nettoyer
+    log "INFO" "[$METHOD_NAME] Import=${IMPORT_DURATION}s + Index=${IDX_DURATION}s -> Total=${TOTAL_DURATION}s - Lignes: $TOTAL_ROWS"
+    echo "Résultat $METHOD_NAME: ${TOTAL_DURATION}s - $TOTAL_ROWS lignes"
+
+    local RESULT="${METHOD_NAME}|${TOTAL_DURATION}|${TOTAL_ROWS}"
+
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
+
+    echo "$RESULT"
 }
 
-# ─── MÉTHODE 2: INSERT SELECT AVEC batching 100k (toutes tables) ───
+# ────────────────────────────────────────────────────────────
+# MÉTHODE 2 : batching TOUTES les tables
+# ────────────────────────────────────────────────────────────
 test_method_insert_batched_all() {
-    local METHOD_NAME="INSERT_BATCHED_ALL"
-    local PREFIX="test_m2"
-    local BATCH_SIZE="$1"
+    local METHOD_NAME="$1"   # M2, M2-2, M2-3
+    local PREFIX="$2"
+    local BATCH_SIZE="$3"
 
-    log_section "Test Méthode 2: INSERT SELECT avec batching TOUTES tables ($BATCH_SIZE lignes)"
+    log_section "Test $METHOD_NAME : INSERT SELECT batching TOUTES tables (batch=${BATCH_SIZE})"
 
-    # Créer schéma de test
-    $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS ${PREFIX}_raw_acd < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+    create_schema_raw_acd "$PREFIX"
 
+    local START IMPORT_END END
     START=$(date +%s)
 
-    # Fonction d'import par batch (TOUTES les tables)
     import_batched_all() {
         local DB="$1"
         local DOSSIER_CODE="${DB#compta_}"
@@ -133,7 +263,7 @@ test_method_insert_batched_all() {
         local BATCH_SIZE="$3"
 
         for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
-            # Batching pour TOUTES les tables (y compris compte/journal)
+            local TOTAL OFFSET
             TOTAL=$($MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" -N -e "
                 SELECT COUNT(*) FROM \`$DB\`.\`$TABLE\`
             " 2>/dev/null || echo "0")
@@ -142,9 +272,8 @@ test_method_insert_batched_all() {
                 continue
             fi
 
-            # Importer par batch de 100k pour TOUTES les tables
             OFFSET=0
-            while [ $OFFSET -lt $TOTAL ]; do
+            while [ "$OFFSET" -lt "$TOTAL" ]; do
                 $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
                     --compress -e "
                     INSERT INTO ${PREFIX}_raw_acd.$TABLE
@@ -160,45 +289,50 @@ test_method_insert_batched_all() {
     }
 
     export -f import_batched_all
-    export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL
+    export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL MYSQL_OPTS
 
-    # Import séquentiel (P=1)
     for DB in $TEST_DATABASES; do
         import_batched_all "$DB" "$PREFIX" "$BATCH_SIZE"
     done
 
+    IMPORT_END=$(date +%s)
+
+    local IDX_DURATION
+    IDX_DURATION=$(create_indexes "${PREFIX}_raw_acd")
+
     END=$(date +%s)
-    DURATION=$((END - START))
 
-    TOTAL_ROWS=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT SUM(table_rows)
-        FROM information_schema.tables
-        WHERE table_schema = '${PREFIX}_raw_acd'
-    " || echo "0")
+    local IMPORT_DURATION=$((IMPORT_END - START))
+    local TOTAL_DURATION=$((END - START))
 
-    log "INFO" "Durée: ${DURATION}s - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
+    local TOTAL_ROWS
+    TOTAL_ROWS=$(count_rows_raw_acd "$PREFIX")
 
-    # Nettoyer
+    log "INFO" "[$METHOD_NAME] Import=${IMPORT_DURATION}s + Index=${IDX_DURATION}s -> Total=${TOTAL_DURATION}s - Lignes: $TOTAL_ROWS"
+    echo "Résultat $METHOD_NAME: ${TOTAL_DURATION}s - $TOTAL_ROWS lignes"
+
+    local RESULT="${METHOD_NAME}|${TOTAL_DURATION}|${TOTAL_ROWS}"
+
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
+
+    echo "$RESULT"
 }
 
-# ─── MÉTHODE 3: INSERT SELECT AVEC batching 100k (écritures seulement) ───
+# ────────────────────────────────────────────────────────────
+# MÉTHODE 3 : batching sur tables d'écritures uniquement
+# ────────────────────────────────────────────────────────────
 test_method_insert_batched_ecritures() {
-    local METHOD_NAME="INSERT_BATCHED_ECRITURES"
-    local PREFIX="test_m3"
-    local BATCH_SIZE="$1"
+    local METHOD_NAME="$1"   # M1-2, M1-3, M3, M3-2, M3-3
+    local PREFIX="$2"
+    local BATCH_SIZE="$3"
 
-    log_section "Test Méthode 3: INSERT SELECT avec batching écritures uniquement ($BATCH_SIZE lignes)"
+    log_section "Test $METHOD_NAME : INSERT SELECT batching ÉCRITURES (batch=${BATCH_SIZE})"
 
-    # Créer schéma de test
-    $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS -e "CREATE DATABASE ${PREFIX}_raw_acd;"
-    $MYSQL $MYSQL_OPTS ${PREFIX}_raw_acd < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql"
+    create_schema_raw_acd "$PREFIX"
 
+    local START IMPORT_END END
     START=$(date +%s)
 
-    # Fonction d'import par batch (100k lignes pour écritures seulement)
     import_batched_ecritures() {
         local DB="$1"
         local DOSSIER_CODE="${DB#compta_}"
@@ -206,9 +340,8 @@ test_method_insert_batched_ecritures() {
         local BATCH_SIZE="$3"
 
         for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
-            # Batching uniquement pour les 4 tables d'écritures
+
             if [[ "$TABLE" == "compte" ]] || [[ "$TABLE" == "journal" ]]; then
-                # Tables compte/journal : import complet SANS batching (petites tables)
                 $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
                     --compress -e "
                     INSERT INTO ${PREFIX}_raw_acd.$TABLE
@@ -218,7 +351,7 @@ test_method_insert_batched_ecritures() {
                 continue
             fi
 
-            # Tables d'écritures : batching par 100k lignes
+            local TOTAL OFFSET
             TOTAL=$($MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" -N -e "
                 SELECT COUNT(*) FROM \`$DB\`.\`$TABLE\`
             " 2>/dev/null || echo "0")
@@ -227,9 +360,8 @@ test_method_insert_batched_ecritures() {
                 continue
             fi
 
-            # Importer par batch de 100k
             OFFSET=0
-            while [ $OFFSET -lt $TOTAL ]; do
+            while [ "$OFFSET" -lt "$TOTAL" ]; do
                 $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
                     --compress -e "
                     INSERT INTO ${PREFIX}_raw_acd.$TABLE
@@ -245,48 +377,54 @@ test_method_insert_batched_ecritures() {
     }
 
     export -f import_batched_ecritures
-    export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL
+    export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL MYSQL_OPTS
 
-    # Import séquentiel (P=1)
     for DB in $TEST_DATABASES; do
         import_batched_ecritures "$DB" "$PREFIX" "$BATCH_SIZE"
     done
 
+    IMPORT_END=$(date +%s)
+
+    local IDX_DURATION
+    IDX_DURATION=$(create_indexes "${PREFIX}_raw_acd")
+
     END=$(date +%s)
-    DURATION=$((END - START))
 
-    TOTAL_ROWS=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT SUM(table_rows)
-        FROM information_schema.tables
-        WHERE table_schema = '${PREFIX}_raw_acd'
-    " || echo "0")
+    local IMPORT_DURATION=$((IMPORT_END - START))
+    local TOTAL_DURATION=$((END - START))
 
-    log "INFO" "Durée: ${DURATION}s - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_ROWS}"
+    local TOTAL_ROWS
+    TOTAL_ROWS=$(count_rows_raw_acd "$PREFIX")
 
-    # Nettoyer
+    log "INFO" "[$METHOD_NAME] Import=${IMPORT_DURATION}s + Index=${IDX_DURATION}s -> Total=${TOTAL_DURATION}s - Lignes: $TOTAL_ROWS"
+    echo "Résultat $METHOD_NAME: ${TOTAL_DURATION}s - $TOTAL_ROWS lignes"
+
+    local RESULT="${METHOD_NAME}|${TOTAL_DURATION}|${TOTAL_ROWS}"
+
     $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_raw_acd;"
+
+    echo "$RESULT"
 }
 
-# ─── MÉTHODE 4: DUMP COMPLET (ancien script, référence) ───
+# ────────────────────────────────────────────────────────────
+# MÉTHODE 4 : DUMP COMPLET (mysqldump)
+# ────────────────────────────────────────────────────────────
 test_method_dump_full() {
-    local METHOD_NAME="DUMP_FULL_LEGACY"
-    local PREFIX="test_m4"
+    local METHOD_NAME="$1"   # M4
+    local PREFIX="$2"        # test_m4
 
-    log_section "Test Méthode 4: DUMP COMPLET (ancien script - référence historique)"
+    log_section "Test $METHOD_NAME : DUMP COMPLET (mysqldump --databases)"
 
+    local START END DURATION
     START=$(date +%s)
 
-    # Fonction d'import avec mysqldump complet (comme l'ancien script)
     import_dump_full() {
         local DB="$1"
         local PREFIX="$2"
         local LOCAL_DB="${PREFIX}_${DB}"
 
-        # Créer la base locale avec préfixe test_
         $MYSQL $MYSQL_OPTS -e "CREATE DATABASE IF NOT EXISTS \`$LOCAL_DB\`;"
 
-        # Dump complet de la base (toutes les tables)
         $MYSQLDUMP -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
             --compress \
             --databases "$DB" 2>/dev/null \
@@ -300,7 +438,6 @@ test_method_dump_full() {
     export -f import_dump_full
     export ACD_HOST ACD_PORT ACD_USER ACD_PASS MYSQL MYSQLDUMP MYSQL_OPTS
 
-    # Import séquentiel (P=1)
     for DB in $TEST_DATABASES; do
         import_dump_full "$DB" "$PREFIX"
     done
@@ -308,30 +445,33 @@ test_method_dump_full() {
     END=$(date +%s)
     DURATION=$((END - START))
 
-    # Compter toutes les tables créées
+    local TOTAL_TABLES TOTAL_ROWS
     TOTAL_TABLES=$($MYSQL $MYSQL_OPTS -N -e "
         SELECT COUNT(*)
         FROM information_schema.tables
         WHERE table_schema LIKE '${PREFIX}_%'
     " || echo "0")
 
-    # Compter les lignes totales (estimation)
     TOTAL_ROWS=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT SUM(table_rows)
+        SELECT COALESCE(SUM(table_rows),0)
         FROM information_schema.tables
         WHERE table_schema LIKE '${PREFIX}_%'
     " || echo "0")
 
-    log "INFO" "Durée: ${DURATION}s - Tables: $TOTAL_TABLES - Lignes: $TOTAL_ROWS"
-    echo "${METHOD_NAME}|${DURATION}|${TOTAL_TABLES} tables|${TOTAL_ROWS} lignes"
+    log "INFO" "[$METHOD_NAME] Total=${DURATION}s - Tables: $TOTAL_TABLES - Lignes: $TOTAL_ROWS"
+    echo "Résultat $METHOD_NAME: ${DURATION}s - ${TOTAL_TABLES} tables - ${TOTAL_ROWS} lignes"
 
-    # Nettoyer toutes les bases test_m4_compta_*
+    local RESULT="${METHOD_NAME}|${DURATION}|${TOTAL_TABLES} tables|${TOTAL_ROWS} lignes"
+
     for DB in $TEST_DATABASES; do
         $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS ${PREFIX}_${DB};" 2>/dev/null || true
     done
+
+    echo "$RESULT"
 }
 
-# ─── Exécution des tests ───────────────────────────────────
+# ─── Exécution des 10 tests ────────────────────────────────
+
 echo "════════════════════════════════════════════════════════" >> "$RESULTS_FILE"
 echo "RÉSULTATS DÉTAILLÉS" >> "$RESULTS_FILE"
 echo "════════════════════════════════════════════════════════" >> "$RESULTS_FILE"
@@ -339,254 +479,86 @@ echo "" >> "$RESULTS_FILE"
 
 declare -A RESULTS
 
-# Test Méthode 1: INSERT SELECT SANS batching
-RESULT=$(test_method_insert_select_no_batch)
+RESULT=$(test_method_insert_select_no_batch "M1" "test_m1" 2>&1 | tail -n 1)
 RESULTS["M1"]="$RESULT"
-echo "Méthode 1: $RESULT" >> "$RESULTS_FILE"
+echo "M1  : $RESULT" >> "$RESULTS_FILE"
 
-# Test Méthode 2: INSERT SELECT avec batching TOUTES tables
-RESULT=$(test_method_insert_batched_all "$BATCH_SIZE")
+RESULT=$(test_method_insert_batched_ecritures "M1-2" "test_m1_2" "$BATCH_50K" 2>&1 | tail -n 1)
+RESULTS["M1-2"]="$RESULT"
+echo "M1-2: $RESULT" >> "$RESULTS_FILE"
+
+RESULT=$(test_method_insert_batched_ecritures "M1-3" "test_m1_3" "$BATCH_100K" 2>&1 | tail -n 1)
+RESULTS["M1-3"]="$RESULT"
+echo "M1-3: $RESULT" >> "$RESULTS_FILE"
+
+RESULT=$(test_method_insert_batched_all "M2" "test_m2" "$BATCH_50K" 2>&1 | tail -n 1)
 RESULTS["M2"]="$RESULT"
-echo "Méthode 2: $RESULT" >> "$RESULTS_FILE"
+echo "M2  : $RESULT" >> "$RESULTS_FILE"
 
-# Test Méthode 3: INSERT SELECT avec batching écritures seulement
-RESULT=$(test_method_insert_batched_ecritures "$BATCH_SIZE")
+RESULT=$(test_method_insert_batched_all "M2-2" "test_m2_2" "$BATCH_50K" 2>&1 | tail -n 1)
+RESULTS["M2-2"]="$RESULT"
+echo "M2-2: $RESULT" >> "$RESULTS_FILE"
+
+RESULT=$(test_method_insert_batched_all "M2-3" "test_m2_3" "$BATCH_100K" 2>&1 | tail -n 1)
+RESULTS["M2-3"]="$RESULT"
+echo "M2-3: $RESULT" >> "$RESULTS_FILE"
+
+RESULT=$(test_method_insert_batched_ecritures "M3" "test_m3" "$BATCH_50K" 2>&1 | tail -n 1)
 RESULTS["M3"]="$RESULT"
-echo "Méthode 3: $RESULT" >> "$RESULTS_FILE"
+echo "M3  : $RESULT" >> "$RESULTS_FILE"
 
-# Test Méthode 4: DUMP COMPLET (référence)
-RESULT=$(test_method_dump_full)
+RESULT=$(test_method_insert_batched_ecritures "M3-2" "test_m3_2" "$BATCH_50K" 2>&1 | tail -n 1)
+RESULTS["M3-2"]="$RESULT"
+echo "M3-2: $RESULT" >> "$RESULTS_FILE"
+
+RESULT=$(test_method_insert_batched_ecritures "M3-3" "test_m3_3" "$BATCH_100K" 2>&1 | tail -n 1)
+RESULTS["M3-3"]="$RESULT"
+echo "M3-3: $RESULT" >> "$RESULTS_FILE"
+
+RESULT=$(test_method_dump_full "M4" "test_m4" 2>&1 | tail -n 1)
 RESULTS["M4"]="$RESULT"
-echo "Méthode 4: $RESULT" >> "$RESULTS_FILE"
+echo "M4  : $RESULT" >> "$RESULTS_FILE"
 
 echo "" >> "$RESULTS_FILE"
 
-# ─── Générer le tableau récapitulatif ─────────────────────
-log_section "📊 GÉNÉRATION DU RAPPORT FINAL"
+# ─── Synthèse simple sur les durées ────────────────────────
 
-cat >> "$RESULTS_FILE" << 'EOF'
+log_section "📊 RÉCAPITULATIF DES DURÉES"
 
-════════════════════════════════════════════════════════════════
-  TABLEAU RÉCAPITULATIF
-════════════════════════════════════════════════════════════════
+parse_duration() { echo "$1" | cut -d'|' -f2; }
 
-EOF
-
-# Parser les résultats
-parse_duration() {
-    echo "$1" | cut -d'|' -f2
-}
-
-M1=$(parse_duration "${RESULTS[M1]}")
-M2=$(parse_duration "${RESULTS[M2]}")
-M3=$(parse_duration "${RESULTS[M3]}")
-M4=$(parse_duration "${RESULTS[M4]}")
+M1_DUR=$(parse_duration "${RESULTS[M1]}")
+M1_2_DUR=$(parse_duration "${RESULTS[M1-2]}")
+M1_3_DUR=$(parse_duration "${RESULTS[M1-3]}")
+M2_DUR=$(parse_duration "${RESULTS[M2]}")
+M2_2_DUR=$(parse_duration "${RESULTS[M2-2]}")
+M2_3_DUR=$(parse_duration "${RESULTS[M2-3]}")
+M3_DUR=$(parse_duration "${RESULTS[M3]}")
+M3_2_DUR=$(parse_duration "${RESULTS[M3-2]}")
+M3_3_DUR=$(parse_duration "${RESULTS[M3-3]}")
+M4_DUR=$(parse_duration "${RESULTS[M4]}")
 
 cat >> "$RESULTS_FILE" << EOF
-| Méthode                               | Durée  | Architecture          | Batching                       |
-|---------------------------------------|--------|-----------------------|--------------------------------|
-| INSERT SELECT (SANS batching)         | ${M1}s | ✅ raw_acd centralisé | Aucun                          |
-| INSERT BATCHED (toutes tables)        | ${M2}s | ✅ raw_acd centralisé | 100k lignes (6 tables)         |
-| INSERT BATCHED (écritures seulement)  | ${M3}s | ✅ raw_acd centralisé | 100k lignes (4 tables)         |
-| DUMP COMPLET (ancien)                 | ${M4}s | ❌ Bases locales      | N/A                            |
-
 ════════════════════════════════════════════════════════════════
-  ESTIMATION POUR 3500 BASES
+  RÉCAPITULATIF DES DURÉES (en secondes)
 ════════════════════════════════════════════════════════════════
 
-EOF
-
-# Calculer les estimations pour 3500 bases
-M1_ESTIMATE=$((M1 * 3500 / NB_FOUND))
-M2_ESTIMATE=$((M2 * 3500 / NB_FOUND))
-M3_ESTIMATE=$((M3 * 3500 / NB_FOUND))
-M4_ESTIMATE=$((M4 * 3500 / NB_FOUND))
-
-cat >> "$RESULTS_FILE" << EOF
-Méthode 1 (SANS batching)            : $(($M1_ESTIMATE / 3600))h $(($M1_ESTIMATE % 3600 / 60))min
-Méthode 2 (BATCHED toutes)           : $(($M2_ESTIMATE / 3600))h $(($M2_ESTIMATE % 3600 / 60))min
-Méthode 3 (BATCHED écritures)        : $(($M3_ESTIMATE / 3600))h $(($M3_ESTIMATE % 3600 / 60))min
-Méthode 4 (DUMP COMPLET)             : $(($M4_ESTIMATE / 3600))h $(($M4_ESTIMATE % 3600 / 60))min
-
-════════════════════════════════════════════════════════════════
-  ANALYSE COMPARATIVE
-════════════════════════════════════════════════════════════════
+| ID   | Méthode                                    | Batch       | Durée (s) |
+|------|--------------------------------------------|-------------|-----------|
+| M1   | INSERT SELECT SANS batching                | Aucun       | ${M1_DUR} |
+| M1-2 | Méthode 1 - batching ÉCRITURES             | 50 000      | ${M1_2_DUR} |
+| M1-3 | Méthode 1 - batching ÉCRITURES             | 100 000     | ${M1_3_DUR} |
+| M2   | Méthode 2 - batching TOUTES tables         | 50 000      | ${M2_DUR} |
+| M2-2 | Méthode 2 - batching TOUTES tables (bis)   | 50 000      | ${M2_2_DUR} |
+| M2-3 | Méthode 2 - batching TOUTES tables         | 100 000     | ${M2_3_DUR} |
+| M3   | Méthode 3 - batching ÉCRITURES             | 50 000      | ${M3_DUR} |
+| M3-2 | Méthode 3 - batching ÉCRITURES (bis)       | 50 000      | ${M3_2_DUR} |
+| M3-3 | Méthode 3 - batching ÉCRITURES             | 100 000     | ${M3_3_DUR} |
+| M4   | DUMP COMPLET (référence)                   | N/A         | ${M4_DUR} |
 
 EOF
 
-# Trouver la méthode la plus rapide compatible raw_acd
-BEST_TIME=$M1
-BEST_METHOD="M1"
-BEST_NAME="INSERT SELECT SANS batching"
-
-if [ "$M2" -lt "$BEST_TIME" ]; then
-    BEST_TIME=$M2
-    BEST_METHOD="M2"
-    BEST_NAME="INSERT BATCHED (toutes tables)"
-fi
-
-if [ "$M3" -lt "$BEST_TIME" ]; then
-    BEST_TIME=$M3
-    BEST_METHOD="M3"
-    BEST_NAME="INSERT BATCHED (écritures seulement)"
-fi
-
-cat >> "$RESULTS_FILE" << EOF
-✅ MÉTHODE LA PLUS RAPIDE (compatible raw_acd): $BEST_NAME
-   Temps: ${BEST_TIME}s pour $NB_FOUND bases
-   Estimation 3500 bases: $(($BEST_TIME * 3500 / NB_FOUND / 3600))h $(($BEST_TIME * 3500 / NB_FOUND % 3600 / 60))min
-
-════════════════════════════════════════════════════════════════
-
-Comparaison des variantes de batching:
-
-EOF
-
-# Comparer M1 vs M2
-if [ "$M1" -lt "$M2" ]; then
-    DIFF=$((M2 - M1))
-    PERCENT=$(( (M2 - M1) * 100 / M1 ))
-    echo "🔹 SANS batching vs BATCHED toutes tables:" >> "$RESULTS_FILE"
-    echo "   SANS batching est ${PERCENT}% plus rapide (gain: ${DIFF}s)" >> "$RESULTS_FILE"
-    echo "   ➜ Le batching sur TOUTES les tables ajoute de l'overhead" >> "$RESULTS_FILE"
-else
-    DIFF=$((M1 - M2))
-    PERCENT=$(( (M1 - M2) * 100 / M2 ))
-    echo "🔹 SANS batching vs BATCHED toutes tables:" >> "$RESULTS_FILE"
-    echo "   BATCHED toutes tables est ${PERCENT}% plus rapide (gain: ${DIFF}s)" >> "$RESULTS_FILE"
-    echo "   ➜ Le batching améliore les performances même sur petites tables" >> "$RESULTS_FILE"
-fi
-
-echo "" >> "$RESULTS_FILE"
-
-# Comparer M1 vs M3
-if [ "$M1" -lt "$M3" ]; then
-    DIFF=$((M3 - M1))
-    PERCENT=$(( (M3 - M1) * 100 / M1 ))
-    echo "🔹 SANS batching vs BATCHED écritures seulement:" >> "$RESULTS_FILE"
-    echo "   SANS batching est ${PERCENT}% plus rapide (gain: ${DIFF}s)" >> "$RESULTS_FILE"
-    echo "   ➜ Le batching partiel n'améliore pas les performances" >> "$RESULTS_FILE"
-else
-    DIFF=$((M1 - M3))
-    PERCENT=$(( (M1 - M3) * 100 / M3 ))
-    echo "🔹 SANS batching vs BATCHED écritures seulement:" >> "$RESULTS_FILE"
-    echo "   BATCHED écritures est ${PERCENT}% plus rapide (gain: ${DIFF}s)" >> "$RESULTS_FILE"
-    echo "   ➜ Le batching sur grandes tables améliore les performances" >> "$RESULTS_FILE"
-fi
-
-echo "" >> "$RESULTS_FILE"
-
-# Comparer M2 vs M3
-if [ "$M2" -lt "$M3" ]; then
-    DIFF=$((M3 - M2))
-    PERCENT=$(( (M3 - M2) * 100 / M2 ))
-    echo "🔹 BATCHED toutes tables vs BATCHED écritures seulement:" >> "$RESULTS_FILE"
-    echo "   BATCHED toutes tables est ${PERCENT}% plus rapide (gain: ${DIFF}s)" >> "$RESULTS_FILE"
-    echo "   ➜ Le batching sur compte/journal est bénéfique" >> "$RESULTS_FILE"
-else
-    DIFF=$((M2 - M3))
-    PERCENT=$(( (M2 - M3) * 100 / M3 ))
-    echo "🔹 BATCHED toutes tables vs BATCHED écritures seulement:" >> "$RESULTS_FILE"
-    echo "   BATCHED écritures seulement est ${PERCENT}% plus rapide (gain: ${DIFF}s)" >> "$RESULTS_FILE"
-    echo "   ➜ Le batching sur compte/journal ajoute de l'overhead inutile" >> "$RESULTS_FILE"
-fi
-
-cat >> "$RESULTS_FILE" << EOF
-
-════════════════════════════════════════════════════════════════
-
-Méthode DUMP COMPLET (Méthode 4 - ancien script):
-  - Temps: ${M4}s pour $NB_FOUND bases
-  - Estimation 3500 bases: $(($M4_ESTIMATE / 3600))h $(($M4_ESTIMATE % 3600 / 60))min
-  - ⚠️  Incompatible avec raw_acd (créé ~50 tables × 3500 bases)
-  - ⚠️  Stockage: Énorme espace disque requis
-  - ❌ Architecture obsolète (non centralisée)
-
-EOF
-
-# Comparer meilleure méthode raw_acd vs ancien script
-if [ "$BEST_TIME" -lt "$M4" ]; then
-    GAIN=$((100 - (BEST_TIME * 100 / M4)))
-    cat >> "$RESULTS_FILE" << EOF
-✅ Gain architecture raw_acd vs ancien script: ${GAIN}% plus rapide
-   Méthode optimale: $BEST_NAME
-   + Centralisation + Moins stockage + Performance
-EOF
-else
-    LOSS=$(((BEST_TIME * 100 / M4) - 100))
-    cat >> "$RESULTS_FILE" << EOF
-⚠️  Architecture raw_acd ${LOSS}% plus lente que ancien script
-   MAIS: Centralisation indispensable pour architecture 4 couches
-   Trade-off acceptable pour gain en maintenance/requêtes
-EOF
-fi
-
-cat >> "$RESULTS_FILE" << EOF
-
-════════════════════════════════════════════════════════════════
-  RECOMMANDATION FINALE
-════════════════════════════════════════════════════════════════
-
-EOF
-
-# Recommandation basée sur la méthode la plus rapide
-if [ "$BEST_METHOD" = "M1" ]; then
-    cat >> "$RESULTS_FILE" << 'EOF'
-✅ MÉTHODE RECOMMANDÉE: INSERT SELECT SANS batching
-
-Raison:
-  - Plus simple et plus rapide
-  - 1 requête par table (6 requêtes par base)
-  - Moins d'overhead réseau
-  - Code maintenable
-
-Configuration:
-  bash/raw/02_import_raw_compta.sh
-  PARALLEL_JOBS=1
-  Pas de batching nécessaire
-
-Le batching n'apporte pas d'amélioration pour vos volumes de données.
-EOF
-elif [ "$BEST_METHOD" = "M2" ]; then
-    cat >> "$RESULTS_FILE" << 'EOF'
-✅ MÉTHODE RECOMMANDÉE: INSERT SELECT avec batching (TOUTES tables)
-
-Raison:
-  - Meilleure performance globale
-  - Évite timeouts MySQL sur toutes les tables
-  - Gestion mémoire optimisée
-
-Configuration:
-  bash/raw/02_import_raw_compta.sh
-  PARALLEL_JOBS=1
-  BATCH_SIZE=100000 (pour les 6 tables)
-
-⚠️  Nécessite modification du script actuel.
-EOF
-else  # M3
-    cat >> "$RESULTS_FILE" << 'EOF'
-✅ MÉTHODE RECOMMANDÉE: INSERT SELECT avec batching (écritures seulement)
-
-Raison:
-  - Bon compromis performance/complexité
-  - Batching uniquement pour grandes tables (écritures)
-  - Tables compte/journal importées en 1 fois (petites)
-
-Configuration:
-  bash/raw/02_import_raw_compta.sh
-  PARALLEL_JOBS=1
-  BATCH_SIZE=100000 (pour histo_*, ligne_ecriture, ecriture)
-
-Cette approche est déjà implémentée dans le script actuel.
-EOF
-fi
-
-echo "" >> "$RESULTS_FILE"
-echo "Rapport sauvegardé dans: $RESULTS_FILE" >> "$RESULTS_FILE"
-echo "Date: $(date '+%Y-%m-%d %H:%M:%S')" >> "$RESULTS_FILE"
-
-# ─── Afficher le rapport ───────────────────────────────────
 log_section "📄 RAPPORT FINAL"
 cat "$RESULTS_FILE"
 
-log "SUCCESS" "Benchmark terminé ! Résultats sauvegardés dans: $RESULTS_FILE"
+log "SUCCESS" "Benchmark terminé. Résultats : $RESULTS_FILE"
