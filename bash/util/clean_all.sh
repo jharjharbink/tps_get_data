@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# CLEAN ALL - Supprime toutes les bases/schémas du pipeline
+# CLEAN ALL - Version ultra rapide (Solution 2 : suppression physique)
 # ============================================================
 set -euo pipefail
 
@@ -8,70 +8,88 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$SCRIPT_DIR/bash/config.sh"
 source "$SCRIPT_DIR/bash/logging.sh"
 
-log_section "🧹 NETTOYAGE COMPLET DE LA BDD"
+log_section "🧹 NETTOYAGE COMPLET DE LA BDD (mode ULTRA-RAPIDE)"
 
-read -p "⚠️  Ceci va SUPPRIMER toutes les données. Confirmer ? (oui/non) : " CONFIRM
-if [ "$CONFIRM" != "oui" ]; then
-    echo "Annulé."
-    exit 0
-fi
+read -p "⚠️  Ceci va SUPPRIMER TOUTES les données. Continuer ? (oui/non) : " CONFIRM
+[ "$CONFIRM" != "oui" ] && { echo "Annulé."; exit 0; }
 
-log "INFO" "Suppression des schémas raw_*..."
-RAW_DBS=$($MYSQL $MYSQL_OPTS -N -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'raw_%';" 2>/dev/null || echo "")
-if [ -n "$RAW_DBS" ]; then
-    RAW_COUNT=$(echo "$RAW_DBS" | wc -l)
-    log "INFO" "$RAW_COUNT bases raw_* trouvées, suppression..."
-    for DB in $RAW_DBS; do
-        $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS \`$DB\`;" 2>/dev/null
-    done
-    log "SUCCESS" "Bases raw_* supprimées"
-else
-    log "INFO" "Aucune base raw_* trouvée"
-fi
+# Récupération du datadir MySQL
+DATADIR=$($MYSQL $MYSQL_OPTS -N -e "SELECT @@datadir;")
+log "INFO" "Répertoire MySQL : $DATADIR"
 
-log "INFO" "Suppression des schémas compta_*..."
-COMPTA_DBS=$($MYSQL $MYSQL_OPTS -N -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'compta_%';" 2>/dev/null || echo "")
-if [ -n "$COMPTA_DBS" ]; then
-    COMPTA_COUNT=$(echo "$COMPTA_DBS" | wc -l)
-    log "WARNING" "$COMPTA_COUNT bases compta_* trouvées, suppression..."
-    for DB in $COMPTA_DBS; do
-        $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS \`$DB\`;" 2>/dev/null
-    done
-    log "SUCCESS" "Bases compta_* supprimées"
-else
-    log "INFO" "Aucune base compta_* trouvée (normal avec raw_acd centralisé)"
-fi
+# ============================================================
+# FONCTION DE SUPPRESSION ULTRA-RAPIDE
+# ============================================================
+delete_schemas_fast() {
+    local PATTERN="$1"
 
-log "INFO" "Suppression des schémas transform_*..."
-TRANSFORM_DBS=$($MYSQL $MYSQL_OPTS -N -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'transform_%';" 2>/dev/null || echo "")
-if [ -n "$TRANSFORM_DBS" ]; then
-    TRANSFORM_COUNT=$(echo "$TRANSFORM_DBS" | wc -l)
-    log "INFO" "$TRANSFORM_COUNT bases transform_* trouvées, suppression..."
-    for DB in $TRANSFORM_DBS; do
-        $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS \`$DB\`;" 2>/dev/null
-    done
-    log "SUCCESS" "Bases transform_* supprimées"
-else
-    log "INFO" "Aucune base transform_* trouvée"
-fi
+    log "INFO" "Recherche des schémas ${PATTERN}..."
 
+    DBS=$($MYSQL $MYSQL_OPTS -N -e "
+        SELECT schema_name 
+        FROM information_schema.schemata
+        WHERE schema_name LIKE '${PATTERN}';
+    " || echo "")
+
+    if [ -z "$DBS" ]; then
+        log "INFO" "Aucune base correspondant à ${PATTERN}"
+        return
+    fi
+
+    COUNT=$(echo "$DBS" | wc -l)
+    log "WARNING" "$COUNT bases ${PATTERN} trouvées, suppression rapide..."
+
+    START=$(date +%s)
+
+    # Suppression physique des dossiers
+    while read -r DB; do
+        if [ -d "${DATADIR}/${DB}" ]; then
+            rm -rf "${DATADIR}/${DB}"
+        fi
+    done <<< "$DBS"
+
+    # DROP DATABASE (instantané)
+    TMP_SQL="/tmp/drop_physical_${PATTERN}_$$.sql"
+    echo "SET FOREIGN_KEY_CHECKS=0;" > "$TMP_SQL"
+
+    while read -r DB; do
+        echo "DROP DATABASE IF EXISTS \`${DB}\`;" >> "$TMP_SQL"
+    done <<< "$DBS"
+
+    echo "SET FOREIGN_KEY_CHECKS=1;" >> "$TMP_SQL"
+
+    $MYSQL $MYSQL_OPTS < "$TMP_SQL"
+    rm -f "$TMP_SQL"
+
+    END=$(date +%s)
+    log "SUCCESS" "Bases ${PATTERN} supprimées en $((END - START))s"
+}
+
+# ============================================================
+# SUPPRESSIONS ULTRA-RAPIDES
+# ============================================================
+delete_schemas_fast "raw_%"
+delete_schemas_fast "compta_%"
+delete_schemas_fast "transform_%"
+delete_schemas_fast "mart_%"
+
+# Schéma mdm
 log "INFO" "Suppression du schéma mdm..."
-$MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS mdm;" 2>/dev/null
+$MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS mdm;" || true
+rm -rf "${DATADIR}/mdm"
 log "SUCCESS" "Schéma mdm supprimé"
 
-log "INFO" "Suppression des schémas mart_*..."
-MART_DBS=$($MYSQL $MYSQL_OPTS -N -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'mart_%';" 2>/dev/null || echo "")
-if [ -n "$MART_DBS" ]; then
-    MART_COUNT=$(echo "$MART_DBS" | wc -l)
-    log "INFO" "$MART_COUNT bases mart_* trouvées, suppression..."
-    for DB in $MART_DBS; do
-        $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS \`$DB\`;" 2>/dev/null
-    done
-    log "SUCCESS" "Bases mart_* supprimées"
-else
-    log "INFO" "Aucune base mart_* trouvée"
-fi
+# ============================================================
+# FLUSH MySQL (obligatoire après suppression physique)
+# ============================================================
+log "INFO" "Exécution des FLUSH MySQL..."
+$MYSQL $MYSQL_OPTS -e "FLUSH LOGS;"
+$MYSQL $MYSQL_OPTS -e "FLUSH TABLES;"
+log "SUCCESS" "FLUSH terminé"
 
-log "SUCCESS" "Nettoyage terminé !"
-log "INFO" "Bases restantes :"
+# ============================================================
+# FIN
+# ============================================================
+log "SUCCESS" "Nettoyage complet terminé !"
+log "INFO" "Bases encore présentes :"
 $MYSQL $MYSQL_OPTS -e "SHOW DATABASES;"

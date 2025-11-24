@@ -1,0 +1,91 @@
+
+════════════════════════════════════════════════════════
+  🔬 BENCHMARK IMPORT ACD
+════════════════════════════════════════════════════════
+[2025-11-23 22:34:16] [INFO] ℹ️  Sélection de 10 bases pour le benchmark...
+[2025-11-23 22:34:16] [INFO] ℹ️  10 bases sélectionnées pour le benchmark
+
+════════════════════════════════════════════════════════
+  Test Méthode 1: INSERT SELECT SANS batching (script actuel)
+════════════════════════════════════════════════════════
+[2025-11-23 22:34:18] [INFO] ℹ️  Durée: 1s - Lignes: NULL
+
+════════════════════════════════════════════════════════
+  Test Méthode 2: INSERT SELECT avec batching TOUTES tables (100000 lignes)
+════════════════════════════════════════════════════════
+[2025-11-23 22:34:20] [INFO] ℹ️  Durée: 2s - Lignes: NULL
+
+════════════════════════════════════════════════════════
+  Test Méthode 3: INSERT SELECT avec batching écritures uniquement (100000 lignes)
+════════════════════════════════════════════════════════
+[2025-11-23 22:34:21] [INFO] ℹ️  Durée: 1s - Lignes: NULL
+
+════════════════════════════════════════════════════════
+  Test Méthode 4: DUMP COMPLET (ancien script - référence historique)
+════════════════════════════════════════════════════════
+[2025-11-23 22:36:24] [INFO] ℹ️  Durée: 109s - Tables: 2747 - Lignes: 394571
+
+════════════════════════════════════════════════════════
+  📊 GÉNÉRATION DU RAPPORT FINAL
+════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════
+  🔬 BENCHMARK IMPORT ACD
+════════════════════════════════════════════════════════
+[2025-11-23 22:51:15] [INFO] ℹ️  Sélection de 10 bases pour le benchmark...
+[2025-11-23 22:51:15] [INFO] ℹ️  10 bases sélectionnées pour le benchmark
+
+════════════════════════════════════════════════════════
+  Test Méthode 1: INSERT SELECT SANS batching (script actuel)
+════════════════════════════════════════════════════════
+[2025-11-23 22:51:16] [INFO] ℹ️  Durée: 1s - Lignes: NULL
+
+════════════════════════════════════════════════════════
+  Test Méthode 2: INSERT SELECT avec batching TOUTES tables (100000 lignes)
+════════════════════════════════════════════════════════
+[2025-11-23 22:51:18] [INFO] ℹ️  Durée: 2s - Lignes: NULL
+
+════════════════════════════════════════════════════════
+  Test Méthode 3: INSERT SELECT avec batching écritures uniquement (100000 lignes)
+════════════════════════════════════════════════════════
+[2025-11-23 22:51:19] [INFO] ℹ️  Durée: 1s - Lignes: NULL
+
+════════════════════════════════════════════════════════
+  Test Méthode 4: DUMP COMPLET (ancien script - référence historique)
+════════════════════════════════════════════════════════
+[2025-11-23 22:53:05] [INFO] ℹ️  Durée: 103s - Tables: 2747 - Lignes: 394571
+
+════════════════════════════════════════════════════════
+  📊 GÉNÉRATION DU RAPPORT FINAL
+════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════
+  🔬 BENCHMARK IMPORT ACD - 20 BASES
+════════════════════════════════════════════════════════
+[2025-11-23 23:01:37] [INFO] ℹ️  Sélection de 20 bases pour le benchmark...
+[2025-11-23 23:01:37] [INFO] ℹ️  20 bases sélectionnées pour le benchmark
+
+════════════════════════════════════════════════════════
+  Tests avec parallélisme = 1
+════════════════════════════════════════════════════════
+[2025-11-23 23:01:38] [INFO] ℹ️  Test Méthode 1 (INSERT SELECT) - Parallélisme: 1
+[2025-11-23 23:01:39] [INFO] ℹ️  Test Méthode 2 (MYSQLDUMP SÉLECTIF) - Parallélisme: 1
+[2025-11-23 23:01:49] [INFO] ℹ️  Test Méthode 3 (MYSQLDUMP COMPLET) - Parallélisme: 1
+
+════════════════════════════════════════════════════════
+  Tests avec parallélisme = 2
+════════════════════════════════════════════════════════
+[2025-11-23 23:06:34] [INFO] ℹ️  Test Méthode 1 (INSERT SELECT) - Parallélisme: 2
+[2025-11-23 23:06:35] [INFO] ℹ️  Test Méthode 2 (MYSQLDUMP SÉLECTIF) - Parallélisme: 2
+[2025-11-23 23:06:39] [INFO] ℹ️  Test Méthode 3 (MYSQLDUMP COMPLET) - Parallélisme: 2
+
+════════════════════════════════════════════════════════
+  Tests avec parallélisme = 3
+════════════════════════════════════════════════════════
+[2025-11-23 23:13:17] [INFO] ℹ️  Test Méthode 1 (INSERT SELECT) - Parallélisme: 3
+[2025-11-23 23:13:18] [INFO] ℹ️  Test Méthode 2 (MYSQLDUMP SÉLECTIF) - Parallélisme: 3
+[2025-11-23 23:13:21] [INFO] ℹ️  Test Méthode 3 (MYSQLDUMP COMPLET) - Parallélisme: 3
+
+════════════════════════════════════════════════════════
+  📊 GÉNÉRATION DU RAPPORT FINAL
+════════════════════════════════════════════════════════
