@@ -306,35 +306,37 @@ if [ "$MODE" = "incremental" ]; then
 fi
 
 # ─── Créer fichier temporaire avec liste des bases ────────
+# TEST: Limiter à 20 bases pour validation
 TMP_BDDS_FILE="/tmp/acd_eligible_bases_$$.txt"
-printf "%s\n" "${ELIGIBLE_DATABASES[@]}" > "$TMP_BDDS_FILE"
+printf "%s\n" "${ELIGIBLE_DATABASES[@]}" | head -20 > "$TMP_BDDS_FILE"
 
 # ─── Import séquentiel (pas de parallélisme sur la source) ─
 log "INFO" "Lancement des imports (traitement séquentiel pour protéger la source)..."
-log "INFO" "Nombre de bases à traiter: $NB_ELIGIBLE"
+log "WARNING" "⚠️  MODE TEST: Limité à 20 bases (au lieu de $NB_ELIGIBLE)"
+log "INFO" "Nombre de bases à traiter: 20"
 START_TIME=$(date +%s)
 
 # Compteur pour la progression
 COUNTER=0
-BATCH_SIZE=10
+BATCH_SIZE=5
 
 cat "$TMP_BDDS_FILE" | xargs -P "$PARALLEL_JOBS" -I {} bash -c \
     "import_one_database '{}'" \
     2>&1 | while read line; do
         echo "[$(date '+%H:%M:%S')] $line"
 
-        # Incrémenter et afficher progression tous les 10 imports
+        # Incrémenter et afficher progression tous les 5 imports (TEST: 20 bases)
         if [[ "$line" == OK:* ]]; then
             ((COUNTER++)) || true
             if (( COUNTER % BATCH_SIZE == 0 )); then
                 ELAPSED=$(($(date +%s) - START_TIME))
-                REMAINING=$((NB_ELIGIBLE - COUNTER))
+                REMAINING=$((20 - COUNTER))
                 AVG_TIME=$((ELAPSED / COUNTER))
                 ETA=$((REMAINING * AVG_TIME))
 
                 echo ""
                 echo "════════════════════════════════════════════════════════"
-                echo "📊 PROGRESSION: $COUNTER / $NB_ELIGIBLE bases traitées ($(( COUNTER * 100 / NB_ELIGIBLE ))%)"
+                echo "📊 PROGRESSION: $COUNTER / 20 bases traitées ($(( COUNTER * 100 / 20 ))%) [TEST]"
                 echo "⏱️  Temps écoulé: $(($ELAPSED / 60))min $(($ELAPSED % 60))s"
                 echo "⏳ Temps moyen par base: ${AVG_TIME}s"
                 echo "🎯 ETA restant: $(($ETA / 3600))h $(($ETA % 3600 / 60))min"
