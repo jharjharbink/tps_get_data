@@ -26,9 +26,10 @@ delete_schemas_fast() {
     log "INFO" "Recherche des schémas ${PATTERN}..."
 
     DBS=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT schema_name 
+        SELECT schema_name
         FROM information_schema.schemata
-        WHERE schema_name LIKE '${PATTERN}';
+        WHERE schema_name LIKE '${PATTERN}'
+          AND schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys');
     " || echo "")
 
     if [ -z "$DBS" ]; then
@@ -41,14 +42,7 @@ delete_schemas_fast() {
 
     START=$(date +%s)
 
-    # Suppression physique des dossiers
-    while read -r DB; do
-        if [ -d "${DATADIR}/${DB}" ]; then
-            rm -rf "${DATADIR}/${DB}"
-        fi
-    done <<< "$DBS"
-
-    # DROP DATABASE (instantané)
+    # 1. DROP DATABASE d'abord (nettoyage métadonnées + partitions)
     TMP_SQL="/tmp/drop_physical_${PATTERN}_$$.sql"
     echo "SET FOREIGN_KEY_CHECKS=0;" > "$TMP_SQL"
 
@@ -60,6 +54,13 @@ delete_schemas_fast() {
 
     $MYSQL $MYSQL_OPTS < "$TMP_SQL"
     rm -f "$TMP_SQL"
+
+    # 2. Suppression physique des dossiers restants (fichiers orphelins)
+    while read -r DB; do
+        if [ -d "${DATADIR}/${DB}" ]; then
+            rm -rf "${DATADIR}/${DB}"
+        fi
+    done <<< "$DBS"
 
     END=$(date +%s)
     log "SUCCESS" "Bases ${PATTERN} supprimées en $((END - START))s"
@@ -75,8 +76,12 @@ delete_schemas_fast "mart_%"
 
 # Schéma mdm
 log "INFO" "Suppression du schéma mdm..."
+# 1. DROP DATABASE d'abord (métadonnées)
 $MYSQL $MYSQL_OPTS -e "DROP DATABASE IF EXISTS mdm;" || true
-rm -rf "${DATADIR}/mdm"
+# 2. Suppression physique (fichiers orphelins)
+if [ -d "${DATADIR}/mdm" ]; then
+    rm -rf "${DATADIR}/mdm"
+fi
 log "SUCCESS" "Schéma mdm supprimé"
 
 # ============================================================
