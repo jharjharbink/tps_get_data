@@ -11,7 +11,7 @@ source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/logging.sh"
 
 # ─── Bases à exclure ───────────────────────────────────────
-EXCLUDED_DATABASES=("compta_00000" "compta_zz")
+EXCLUDED_DATABASES=("compta_000000" "compta_zz")
 
 # ─── Tables requises pour import ──────────────────────────
 REQUIRED_TABLES=(
@@ -157,6 +157,24 @@ if [ "$NB_ELIGIBLE" -eq 0 ]; then
     exit 1
 fi
 
+# TEST: Limiter à 20 bases pour validation
+ELIGIBLE_DATABASES_LIMITED=("${ELIGIBLE_DATABASES[@]:0:20}")
+NB_TO_PROCESS=${#ELIGIBLE_DATABASES_LIMITED[@]}
+
+if [ "$NB_TO_PROCESS" -lt "$NB_ELIGIBLE" ]; then
+    log "WARNING" "⚠️  MODE TEST: Limitation à $NB_TO_PROCESS bases (total éligible: $NB_ELIGIBLE)"
+else
+    log "INFO" "Traitement de toutes les $NB_TO_PROCESS bases éligibles"
+fi
+
+# Afficher la liste des bases qui vont être traitées
+echo ""
+log "INFO" "Bases à importer ($NB_TO_PROCESS):"
+for i in "${!ELIGIBLE_DATABASES_LIMITED[@]}"; do
+    printf "  %2d. %s\n" "$((i+1))" "${ELIGIBLE_DATABASES_LIMITED[$i]}"
+done
+echo ""
+
 # ─── Mode FULL: TRUNCATE des tables ───────────────────────
 if [ "$MODE" = "full" ]; then
     log "INFO" "Mode FULL: Vidage des tables raw_acd..."
@@ -199,6 +217,11 @@ fi
 import_one_database() {
     local DB="$1"
     local DOSSIER_CODE="${DB#compta_}"  # Extraire "00123" de "compta_00123"
+
+    echo ""
+    echo "╔════════════════════════════════════════════════════════╗"
+    echo "║ 📦 Import: $DB (dossier: $DOSSIER_CODE)"
+    echo "╚════════════════════════════════════════════════════════╝"
 
     # Import pour chaque table avec colonnes explicites
     for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
@@ -276,16 +299,28 @@ import_one_database() {
             fi
         fi
 
+        # Afficher début import de la table
+        printf "  → %-25s " "$TABLE..."
+        local TABLE_START=$(date +%s)
+
         # Exécuter l'import (capturer stderr dans un fichier temporaire)
         ERROR_FILE="/tmp/mysql_error_${DB}_${TABLE}_$$.log"
         if ! $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" \
             --compress -e "$QUERY" 2>"$ERROR_FILE"; then
-            echo "ERREUR: $DB - $TABLE"
-            echo "Détails: $(cat "$ERROR_FILE")"
+            echo "❌ ERREUR"
+            echo "    Requête: $QUERY"
+            echo "    Détails: $(cat "$ERROR_FILE")"
             rm -f "$ERROR_FILE"
             return 1
         fi
         rm -f "$ERROR_FILE"
+
+        # Compter les lignes insérées pour ce dossier
+        local ROW_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_acd.$TABLE WHERE dossier_code = '$DOSSIER_CODE'" 2>/dev/null || echo "0")
+        local TABLE_END=$(date +%s)
+        local TABLE_DURATION=$((TABLE_END - TABLE_START))
+
+        printf "✓ (%ds, %s lignes)\n" "$TABLE_DURATION" "$ROW_COUNT"
     done
 
     echo "OK: $DB"
@@ -306,14 +341,12 @@ if [ "$MODE" = "incremental" ]; then
 fi
 
 # ─── Créer fichier temporaire avec liste des bases ────────
-# TEST: Limiter à 20 bases pour validation
 TMP_BDDS_FILE="/tmp/acd_eligible_bases_$$.txt"
-printf "%s\n" "${ELIGIBLE_DATABASES[@]}" | head -20 > "$TMP_BDDS_FILE"
+printf "%s\n" "${ELIGIBLE_DATABASES_LIMITED[@]}" > "$TMP_BDDS_FILE"
 
 # ─── Import séquentiel (pas de parallélisme sur la source) ─
 log "INFO" "Lancement des imports (traitement séquentiel pour protéger la source)..."
-log "WARNING" "⚠️  MODE TEST: Limité à 20 bases (au lieu de $NB_ELIGIBLE)"
-log "INFO" "Nombre de bases à traiter: 20"
+log "INFO" "Nombre de bases à traiter: $NB_TO_PROCESS"
 START_TIME=$(date +%s)
 
 # Compteur pour la progression
@@ -325,18 +358,18 @@ cat "$TMP_BDDS_FILE" | xargs -P "$PARALLEL_JOBS" -I {} bash -c \
     2>&1 | while read line; do
         echo "[$(date '+%H:%M:%S')] $line"
 
-        # Incrémenter et afficher progression tous les 5 imports (TEST: 20 bases)
+        # Incrémenter et afficher progression tous les 5 imports
         if [[ "$line" == OK:* ]]; then
             ((COUNTER++)) || true
             if (( COUNTER % BATCH_SIZE == 0 )); then
                 ELAPSED=$(($(date +%s) - START_TIME))
-                REMAINING=$((20 - COUNTER))
+                REMAINING=$(($NB_TO_PROCESS - COUNTER))
                 AVG_TIME=$((ELAPSED / COUNTER))
                 ETA=$((REMAINING * AVG_TIME))
 
                 echo ""
                 echo "════════════════════════════════════════════════════════"
-                echo "📊 PROGRESSION: $COUNTER / 20 bases traitées ($(( COUNTER * 100 / 20 ))%) [TEST]"
+                echo "📊 PROGRESSION: $COUNTER / $NB_TO_PROCESS bases traitées ($(( COUNTER * 100 / NB_TO_PROCESS ))%)"
                 echo "⏱️  Temps écoulé: $(($ELAPSED / 60))min $(($ELAPSED % 60))s"
                 echo "⏳ Temps moyen par base: ${AVG_TIME}s"
                 echo "🎯 ETA restant: $(($ETA / 3600))h $(($ETA % 3600 / 60))min"
