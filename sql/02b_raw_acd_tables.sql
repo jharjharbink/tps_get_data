@@ -116,37 +116,48 @@ CREATE TABLE IF NOT EXISTS sync_tracking_by_dossier (
 COMMENT='Tracking granulaire par dossier pour reprise après crash';
 
 
--- DROP VIEW IF EXISTS v_ligne_ecriture_unified;
--- CREATE VIEW v_ligne_ecriture_unified AS
--- SELECT
---     dossier_code,
---     hle.HLE_CODE as ligne_code,
---     hle.HE_CODE as ecriture_code,
---     CPT_CODE,
---     HLE_CRE_ORG as credit,
---     HLE_DEB_ORG as debit,
---     HLE_LIB as libelle,
---     HE_DATE_SAI as date_saisie,
---     HE_ANNEE as annee,
---     HE_MOIS as mois,
---     JNL_CODE,
---     'histo' as source_table 
--- FROM histo_ligne_ecriture hle
--- LEFT JOIN histo_ecriture he ON
--- UNION ALL
--- SELECT
---     dossier_code,
---     LE_CODE as ligne_code,
---     ECR_CODE as ecriture_code,
---     CPT_CODE,
---     LE_CRE_ORG as credit,
---     LE_DEB_ORG as debit,
---     LE_LIB as libelle,
---     ECR_DATE_SAI as date_saisie,
---     ECR_ANNEE as annee,
---     ECR_MOIS as mois,
---     JNL_CODE,
---     'courant' as source_table
+-- ============================================================
+-- INDEXES OPTIMISÉS POUR PERFORMANCES TRANSFORM
+-- Basés sur l'analyse des procédures load_ecritures_acd et load_ecritures_tiers_acd
+-- ============================================================
+
+-- ─── INDEXES TABLE compte ──────────────────────────────────
+-- Utilisé pour : LEFT JOIN compte c ON c.CPT_CODE = hle.CPT_CODE
+CREATE INDEX IF NOT EXISTS idx_dossier ON compte(dossier_code);
+CREATE INDEX IF NOT EXISTS idx_dossier_compte ON compte(dossier_code, CPT_CODE);
+
+-- ─── INDEXES TABLE ecriture ────────────────────────────────
+-- Utilisé pour : WHERE e.ECR_ANNEE >= YEAR(CURDATE()) - 3
+--                GROUP BY prev.journal_code
+--                Import incrémental: WHERE ECR_DATE_SAI > last_sync_date
+CREATE INDEX IF NOT EXISTS idx_dossier_annee_mois ON ecriture(dossier_code, ECR_ANNEE, ECR_MOIS);
+CREATE INDEX IF NOT EXISTS idx_dossier_journal ON ecriture(dossier_code, JNL_CODE);
+CREATE INDEX IF NOT EXISTS idx_date_sai ON ecriture(ECR_DATE_SAI);
+
+-- ─── INDEXES TABLE histo_ecriture ──────────────────────────
+-- Utilisé pour : WHERE he.HE_ANNEE >= YEAR(CURDATE()) - 3
+--                GROUP BY prev.journal_code
+CREATE INDEX IF NOT EXISTS idx_dossier_annee_mois ON histo_ecriture(dossier_code, HE_ANNEE, HE_MOIS);
+CREATE INDEX IF NOT EXISTS idx_dossier_journal ON histo_ecriture(dossier_code, JNL_CODE);
+
+-- ─── INDEXES TABLE journal ─────────────────────────────────
+-- Utilisé pour : LEFT JOIN journal j ON j.JNL_CODE = he.JNL_CODE
+CREATE INDEX IF NOT EXISTS idx_dossier ON journal(dossier_code);
+CREATE INDEX IF NOT EXISTS idx_dossier_code ON journal(dossier_code, JNL_CODE);
+
+-- ─── INDEXES TABLE ligne_ecriture ──────────────────────────
+-- Utilisé pour : WHERE (le.CPT_CODE LIKE 'C%' OR le.CPT_CODE LIKE 'F%')
+--                JOIN ecriture e ON e.ECR_CODE = le.ECR_CODE
+CREATE INDEX IF NOT EXISTS idx_dossier_compte ON ligne_ecriture(dossier_code, CPT_CODE);
+CREATE INDEX IF NOT EXISTS idx_dossier_ecriture ON ligne_ecriture(dossier_code, ECR_CODE);
+CREATE INDEX IF NOT EXISTS idx_compte ON ligne_ecriture(CPT_CODE);
+
+-- ─── INDEXES TABLE histo_ligne_ecriture ────────────────────
+-- Utilisé pour : WHERE (hle.CPT_CODE LIKE 'C%' OR hle.CPT_CODE LIKE 'F%')
+--                JOIN histo_ecriture he ON he.HE_CODE = hle.HE_CODE
+CREATE INDEX IF NOT EXISTS idx_dossier_compte ON histo_ligne_ecriture(dossier_code, CPT_CODE);
+CREATE INDEX IF NOT EXISTS idx_dossier_ecriture ON histo_ligne_ecriture(dossier_code, HE_CODE);
+CREATE INDEX IF NOT EXISTS idx_compte ON histo_ligne_ecriture(CPT_CODE);
 -- FROM ligne_ecriture;
 
 -- ─── VÉRIFICATION ─────────────────────────────────────────

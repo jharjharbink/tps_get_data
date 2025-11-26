@@ -160,16 +160,23 @@ mysql -u root -p -e "SELECT COUNT(DISTINCT dossier_code) FROM raw_acd.histo_lign
 ### Import ACD spécifique
 
 ```bash
-# Import complet (TRUNCATE + 3500 bases)
+# Import complet de tous les dossiers (TRUNCATE + 3500 bases)
 bash bash/raw/02_import_raw_compta.sh --full
 
-# Import incrémental (depuis last_sync_date) ✅ VALIDÉ
+# Import incrémental de tous les dossiers ✅ VALIDÉ
 # Ne synchronise que les tables ecriture et ligne_ecriture
 # Ignore les tables de référence (compte, journal, histo_*)
+# Tracking par dossier avec sync_tracking_by_dossier
 bash bash/raw/02_import_raw_compta.sh --incremental
 
-# Import depuis une date spécifique
-bash bash/raw/02_import_raw_compta.sh --since "01/01/2025 00:00:00"
+# Import complet d'un seul dossier ✅ NOUVEAU
+bash bash/raw/02_import_raw_compta.sh --dossier-full SCIANNAFOO
+
+# Import incrémental d'un seul dossier ✅ NOUVEAU
+bash bash/raw/02_import_raw_compta.sh --dossier-incremental SCIANNAFOO
+
+# Mode debug (affiche requêtes SQL et timings) ✅ NOUVEAU
+bash bash/raw/02_import_raw_compta.sh --dossier-incremental SCIANNAFOO --debug
 ```
 
 ### Nettoyage
