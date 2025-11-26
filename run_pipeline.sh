@@ -175,12 +175,12 @@ fi
 # ─── Mode DATA_ONLY : Import RAW uniquement ────────────────
 if [ "$DATA_ONLY" = true ]; then
     log_subsection "MODE DATA-ONLY : Import des données RAW"
-    
-    log "INFO" "Import raw_dia (DIA/valoxy)..."
-    bash "$SCRIPT_DIR/bash/raw/01_import_raw_dia.sh"
 
     log "INFO" "Import raw_acd (ACD - mode: $ACD_MODE)..."
     bash "$SCRIPT_DIR/bash/raw/02_import_raw_compta.sh" "$ACD_MODE"
+
+    log "INFO" "Import raw_dia (DIA/valoxy)..."
+    bash "$SCRIPT_DIR/bash/raw/01_import_raw_dia.sh"
 
     log "INFO" "Import raw_pennylane (Redshift)..."
     bash "$SCRIPT_DIR/bash/raw/03_import_raw_pennylane.sh"

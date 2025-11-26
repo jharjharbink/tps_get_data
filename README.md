@@ -163,7 +163,9 @@ mysql -u root -p -e "SELECT COUNT(DISTINCT dossier_code) FROM raw_acd.histo_lign
 # Import complet (TRUNCATE + 3500 bases)
 bash bash/raw/02_import_raw_compta.sh --full
 
-# Import incrémental (depuis last_sync_date)
+# Import incrémental (depuis last_sync_date) ✅ VALIDÉ
+# Ne synchronise que les tables ecriture et ligne_ecriture
+# Ignore les tables de référence (compte, journal, histo_*)
 bash bash/raw/02_import_raw_compta.sh --incremental
 
 # Import depuis une date spécifique
@@ -233,11 +235,14 @@ crontab -e
 **Avantages** :
 - ✅ Rapide (quelques minutes au lieu de 4-6h)
 - ✅ Capture uniquement les nouveautés depuis `last_sync_date`
-- ✅ Pas de TRUNCATE, utilise `ON DUPLICATE KEY UPDATE`
+- ✅ Tables incrémentales : `ecriture` et `ligne_ecriture` (filtre sur ECR_DATE_SAI)
+- ✅ Tables de référence ignorées : `compte`, `journal`, `histo_*` (⏭️ skipped)
+- ✅ Gestion NULL values : COALESCE sur colonnes integer (LE_LETP1)
+- ✅ Utilise REPLACE INTO pour mettre à jour les données modifiées
 
 **Limitations** :
-- ⚠️ Les modifications d'écritures existantes ne sont pas capturées (seules les nouvelles)
-- 💡 Solution : Import `--full` hebdomadaire le dimanche
+- ⚠️ Les suppressions d'écritures ne sont pas détectées (pas de soft delete)
+- 💡 Solution : Import `--full` hebdomadaire le dimanche pour recalibrage
 
 ---
 

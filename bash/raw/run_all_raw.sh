@@ -24,8 +24,12 @@ log_section "🚀 DÉMARRAGE IMPORT RAW COMPLET"
 START_TIME=$(date +%s)
 
 # ─── Import DIA ────────────────────────────────────────────
-log "INFO" "Import raw_dia..."
-bash "$SCRIPT_DIR/raw/01_import_raw_dia.sh"
+if [ "$ACD_MODE" = "--incremental" ]; then
+    log "INFO" "⏭️  Skipping raw_dia import (mode: $ACD_MODE)"
+else
+    log "INFO" "Import raw_dia..."
+    bash "$SCRIPT_DIR/raw/01_import_raw_dia.sh"
+fi
 
 # ─── Import compta_* vers raw_acd ──────────────────────────
 log "INFO" "Import raw_acd (mode: $ACD_MODE)..."
