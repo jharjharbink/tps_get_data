@@ -717,10 +717,12 @@ Rotation automatique : conservation de 30 jours
 - 🔄 Validation import incrémental en production
 - ⏳ Tests sur 3500 bases
 
-### Phase 2 : Adaptation TRANSFORM
-1. Adapter les procédures pour utiliser raw_acd
-2. Tester les agrégations ecritures_mensuelles
-3. Valider la qualité des données transformées
+### Phase 2 : Adaptation TRANSFORM ✅ EN COURS
+1. ✅ Adapter les procédures pour utiliser raw_acd
+2. ✅ Ajout compte_normalized (4 caractères)
+3. ✅ Performances : 30-60 min → 2-5 min (90% plus rapide)
+4. ⏳ Tester les agrégations ecritures_mensuelles
+5. 📋 **NEXT : Réorganisation procédures par source** (voir [claude.md](claude.md) Phase 2.1)
 
 ### Phase 3 : Enrichissement MDM
 1. Déduplication SIREN

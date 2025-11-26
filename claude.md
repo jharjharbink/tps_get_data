@@ -330,10 +330,45 @@ ORDER BY HE_ANNEE;
 - ⏳ Tests sur 3500 bases en production
 - ⏳ Import incrémental Pennylane (NEXT STEP)
 
-### Phase 2 : Adaptation TRANSFORM
-1. **Adapter les procédures** pour utiliser raw_acd au lieu de boucler sur compta_*
-2. **Tester les agrégations** ecritures_mensuelles
-3. **Valider la qualité** des données transformées
+### Phase 2 : Adaptation TRANSFORM ✅ EN COURS
+1. ✅ **Adapter les procédures** pour utiliser raw_acd au lieu de boucler sur compta_*
+2. ✅ **Ajout compte_normalized** (4 caractères) pour harmonisation ACD/PennyLane
+3. ✅ **Performances améliorées** : 30-60 min → 2-5 min (90% plus rapide)
+4. ⏳ **Tester les agrégations** ecritures_mensuelles
+5. ⏳ **Valider la qualité** des données transformées
+6. 📋 **NEXT : Réorganisation procédures** (voir ci-dessous)
+
+### Phase 2.1 : Réorganisation procédures TRANSFORM (NEXT STEP)
+
+**Objectif** : Organiser les procédures par source de données au lieu de part1/part2
+
+**Actuellement** :
+- `06_procedures_transform_part1.sql` → dossiers + ecritures (ACD + PennyLane mélangés)
+- `06_procedures_transform_part2.sql` → tiers détaillés (ACD + PennyLane mélangés)
+
+**Cible** :
+- `06_procedures_transform_acd.sql` → Toutes procédures ACD
+  - `load_dossiers_acd()`
+  - `load_comptes_acd()` 🆕 (vers `comptes_referentiel`)
+  - `load_journaux_acd()` 🆕 (vers `journaux_referentiel`)
+  - `load_ecritures_acd()`
+  - `load_ecritures_tiers_acd()`
+
+- `06_procedures_transform_pennylane.sql` → Toutes procédures PennyLane
+  - `load_dossiers_pennylane()`
+  - `load_comptes_pennylane()` 🆕 (vers `comptes_referentiel`)
+  - `load_journaux_pennylane()` 🆕 (vers `journaux_referentiel`)
+  - `load_ecritures_pennylane()`
+  - `load_ecritures_tiers_pennylane()`
+
+**Nouvelles tables référentiels** :
+- `comptes_referentiel` : Plan comptable unifié (source, code_dossier, code_compte, libelle, compte_normalized)
+- `journaux_referentiel` : Journaux unifiés (source, code_dossier, code_journal, libelle)
+
+**Avantages** :
+- ✅ Organisation logique par source de données
+- ✅ Facilite la maintenance (1 source = 1 fichier)
+- ✅ Référentiels unifiés pour analyses cross-sources
 
 ### Phase 3 : Enrichissement MDM
 1. **Déduplication SIREN** (gestion des doublons)

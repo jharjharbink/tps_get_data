@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS histo_ligne_ecriture (
     HLE_LETP1 SMALLINT COMMENT 'Lettrage P1 ?', 
     HLE_DATE_LET DATE COMMENT 'Date Lettrage',
     PRIMARY KEY (dossier_code, HLE_CODE)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ─── TABLE 2: histo_ecriture ───────────────────────────────
 CREATE TABLE IF NOT EXISTS histo_ecriture (
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS histo_ecriture (
     HE_MOIS TINYINT DEFAULT NULL,
     JNL_CODE VARCHAR(32) DEFAULT NULL,
     PRIMARY KEY (dossier_code, HE_CODE)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ─── TABLE 3: ligne_ecriture (courant) ────────────────────
 CREATE TABLE IF NOT EXISTS ligne_ecriture (
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS ligne_ecriture (
     LE_LETP1 SMALLINT COMMENT 'Lettrage P1 ?', 
     LE_DATE_LET DATE COMMENT 'Date Lettrage',
     PRIMARY KEY (dossier_code, LE_CODE)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ─── TABLE 4: ecriture (courant) ──────────────────────────
 CREATE TABLE IF NOT EXISTS ecriture (
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS ecriture (
     ECR_MOIS TINYINT DEFAULT NULL,
     JNL_CODE VARCHAR(32) DEFAULT NULL,
     PRIMARY KEY (dossier_code, ECR_CODE)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ─── TABLE 5: compte ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS compte (
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS compte (
     CPT_CODE VARCHAR(32) NOT NULL,
     CPT_LIB VARCHAR(255) DEFAULT NULL,
     PRIMARY KEY (dossier_code, CPT_CODE)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ─── TABLE 6: journal ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS journal (
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS journal (
     JNL_LIB VARCHAR(30) DEFAULT NULL,
     JNL_TYPE VARCHAR(1) DEFAULT NULL COMMENT 'Type journal (vente, achat, etc.)',
     PRIMARY KEY (dossier_code, JNL_CODE)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ─── TABLE DE TRACKING (incrémental) ──────────────────────
 CREATE TABLE IF NOT EXISTS sync_tracking (
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS sync_tracking (
     last_status VARCHAR(20) DEFAULT 'pending' COMMENT 'success/failed',
     last_duration_sec INT DEFAULT NULL COMMENT 'Durée du dernier import (sec)',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Initialisation du tracking
 INSERT INTO sync_tracking (table_name, last_sync_type, last_status) VALUES
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS sync_tracking_by_dossier (
     PRIMARY KEY (table_name, dossier_code),
     INDEX idx_sync_date (last_sync_date),
     INDEX idx_dossier (dossier_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
 COMMENT='Tracking granulaire par dossier pour reprise après crash';
 
 

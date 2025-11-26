@@ -237,4 +237,42 @@ CREATE TABLE comptabilite_interne (
     INDEX idx_entite (entite_valoxy)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ─────────────────────────────────────────────────────────────
+-- Table : comptes_referentiel
+-- Plan comptable unifié ACD + PennyLane
+-- Permet l'analyse cross-source et la réconciliation
+-- ─────────────────────────────────────────────────────────────
+DROP TABLE IF EXISTS comptes_referentiel;
+CREATE TABLE comptes_referentiel (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source ENUM('ACD', 'PENNYLANE') NOT NULL,
+    code_dossier VARCHAR(64) NOT NULL COMMENT 'Code_DIA pour ACD, company_id pour PennyLane',
+    code_compte VARCHAR(64) NOT NULL COMMENT 'Code compte brut (Cxxxxx/Fxxxxx pour ACD, numérique pour PennyLane)',
+    libelle_compte VARCHAR(255),
+    compte_normalized VARCHAR(4) COMMENT '4 premiers caractères (C*→4110, F*→4100 pour ACD, LEFT(compte,4) pour PennyLane)',
+    synchro_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_compte (source, code_dossier, code_compte),
+    INDEX idx_source (source),
+    INDEX idx_dossier (code_dossier),
+    INDEX idx_compte_normalized (compte_normalized)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ─────────────────────────────────────────────────────────────
+-- Table : journaux_referentiel
+-- Journaux unifiés ACD + PennyLane
+-- Permet l'analyse cross-source des flux par journal
+-- ─────────────────────────────────────────────────────────────
+DROP TABLE IF EXISTS journaux_referentiel;
+CREATE TABLE journaux_referentiel (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source ENUM('ACD', 'PENNYLANE') NOT NULL,
+    code_dossier VARCHAR(64) NOT NULL COMMENT 'Code_DIA pour ACD, company_id pour PennyLane',
+    code_journal VARCHAR(32) NOT NULL,
+    libelle_journal VARCHAR(255),
+    synchro_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_journal (source, code_dossier, code_journal),
+    INDEX idx_source (source),
+    INDEX idx_dossier (code_dossier)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SELECT '✅ Tables TRANSFORM créées avec succès !' AS status;
