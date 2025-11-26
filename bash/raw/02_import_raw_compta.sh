@@ -155,6 +155,12 @@ import_one_database() {
     local DB="$1"
     local DOSSIER_CODE=$(echo "$DB" | sed 's/compta_//' | tr '[:lower:]' '[:upper:]')
 
+    # ─── Validation : Vérifier longueur du code dossier (max 20 caractères) ───
+    if [ ${#DOSSIER_CODE} -gt 20 ]; then
+        log "ERROR" "⚠️  Code dossier '$DOSSIER_CODE' trop long (${#DOSSIER_CODE} caractères, max 20) - Base $DB ignorée"
+        return 1
+    fi
+
     if [ "$DEBUG" = true ]; then
         log "INFO" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         log "INFO" "📦 Base: $DB | Dossier: $DOSSIER_CODE"
@@ -434,6 +440,7 @@ fi
 
 # ─── Import de toutes les bases ───
 CURRENT=0
+SKIPPED_DOSSIERS=0
 START_TIME=$(date +%s)
 
 for DB in "${DATABASES[@]}"; do
@@ -443,7 +450,10 @@ for DB in "${DATABASES[@]}"; do
         printf "\r[%d/%d] Traitement de %-30s" "$CURRENT" "$TOTAL_DBS" "$DB"
     fi
 
-    import_one_database "$DB"
+    # Capturer le code de retour pour détecter les dossiers ignorés
+    if ! import_one_database "$DB"; then
+        SKIPPED_DOSSIERS=$((SKIPPED_DOSSIERS + 1))
+    fi
 done
 
 END_TIME=$(date +%s)
@@ -451,6 +461,10 @@ DURATION=$((END_TIME - START_TIME))
 
 echo ""  # Nouvelle ligne après la progression
 log "SUCCESS" "✅ Import terminé en ${DURATION}s"
+
+if [ "$SKIPPED_DOSSIERS" -gt 0 ]; then
+    log "WARNING" "⚠️  $SKIPPED_DOSSIERS dossier(s) ignoré(s) (code trop long > 20 caractères)"
+fi
 
 # ─── Gestion des indexes selon le mode ───
 if [ "$MODE" = "full" ]; then
