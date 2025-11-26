@@ -91,6 +91,7 @@ CREATE TABLE ecritures_mensuelles (
     siren VARCHAR(9) COMMENT 'Pour jointure MDM',
     period_month DATE NOT NULL COMMENT 'Premier jour du mois',
     compte VARCHAR(64) NOT NULL COMMENT 'Comptes C*/F* agrégés en Cxxxxx/Fxxxxx',
+    compte_normalized VARCHAR(4) NOT NULL COMMENT '4 premiers chars (4110 pour C*, 4100 pour F* en ACD)',
     compte_libelle VARCHAR(255),
     journal_code VARCHAR(32) NOT NULL DEFAULT '',
     journal_libelle VARCHAR(255),
@@ -106,6 +107,7 @@ CREATE TABLE ecritures_mensuelles (
     INDEX idx_siren (siren),
     INDEX idx_period (period_month),
     INDEX idx_compte (compte),
+    INDEX idx_compte_normalized (compte_normalized),
     INDEX idx_journal (journal_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

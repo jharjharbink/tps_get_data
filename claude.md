@@ -20,7 +20,7 @@ RAW (copies brutes) ← 🔧 EN COURS DE VALIDATION
 TRANSFORM (normalisation) ⚠️ NE PAS MODIFIER TANT QUE RAW N'EST PAS VALIDÉ
 └── transform_compta
     ├── dossiers_acd, dossiers_pennylane
-    ├── ecritures_mensuelles (C*/F* agrégés)
+    ├── ecritures_mensuelles (C*/F* agrégés + compte_normalized)
     ├── ecritures_tiers_detaillees (401/411 normalisés)
     ├── exercices, temps_collaborateurs
     └── 🎯 FUTUR : Containerisation pour tableaux de bord clients isolés
@@ -39,6 +39,50 @@ MART (vues métier) ⚠️ NE PAS MODIFIER TANT QUE RAW N'EST PAS VALIDÉ
 ├── 🎯 FUTUR : mart_daf       : 💰 DAF - Pilotage financier cabinet
 └── 🎯 FUTUR : mart_direction : 🎯 Dirigeants - Vision stratégique
 ```
+
+---
+
+## 📋 Règles métier : compte_normalized
+
+### Objectif
+La colonne `compte_normalized` (4 caractères) permet l'harmonisation des comptes entre les différentes sources (ACD et PennyLane) pour faciliter les analyses cross-sources.
+
+### Règles de normalisation par source
+
+#### Source ACD
+```sql
+CASE
+    WHEN compte LIKE 'C%' THEN '4110'  -- Comptes clients (C*)
+    WHEN compte LIKE 'F%' THEN '4100'  -- Comptes fournisseurs (F*)
+    ELSE LEFT(compte, 4)                -- Autres comptes : 4 premiers caractères
+END
+```
+
+**Exemples ACD** :
+- `C00123` → `4110` (client)
+- `CDUPONT` → `4110` (client)
+- `F99456` → `4100` (fournisseur)
+- `FMARTIN` → `4100` (fournisseur)
+- `512000` → `5120` (banque)
+- `706100` → `7061` (vente)
+
+#### Source PennyLane
+```sql
+LEFT(compte, 4)  -- Toujours les 4 premiers caractères
+```
+
+**Exemples PennyLane** :
+- `411123` → `4111` (client)
+- `401456` → `4014` (fournisseur)
+- `512000` → `5120` (banque)
+- `706100` → `7061` (vente)
+
+**Note** : Les comptes PennyLane sont exclusivement composés de chiffres, donc pas de traitement spécial pour C* ou F*.
+
+### Utilisation
+Cette normalisation est appliquée dans :
+- Table `transform_compta.ecritures_mensuelles` (colonne `compte_normalized`)
+- Procédures stockées : `load_ecritures_acd()`, `load_ecritures_pennylane()`
 
 ---
 

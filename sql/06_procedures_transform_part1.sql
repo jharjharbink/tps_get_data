@@ -113,205 +113,214 @@ END//
 
 -- ─────────────────────────────────────────────────────────────
 -- TRANSFORM : load_ecritures_acd
--- Charge les écritures agrégées depuis les bases compta_*
--- Adaptée de ta procédure creationMonthlyBalanceACD
--- Comptes C/F agrégés en Cxxxxx/Fxxxxx
+-- Charge les écritures agrégées depuis raw_acd centralisée
+-- NOUVELLE VERSION : 1 requête au lieu de 3500 boucles
+-- Utilise les 18 indexes optimisés sur raw_acd
+-- Comptes C*/F* → 4110/4100 dans compte_normalized
 -- ─────────────────────────────────────────────────────────────
 DROP PROCEDURE IF EXISTS transform_compta.load_ecritures_acd//
 CREATE PROCEDURE transform_compta.load_ecritures_acd()
 BEGIN
-    DECLARE done INT DEFAULT 0;
-    DECLARE db_name VARCHAR(100);
-    DECLARE sql_text LONGTEXT;
-    DECLARE last_sql LONGTEXT;
-    DECLARE db_count INT DEFAULT 0;
-    DECLARE db_total INT DEFAULT 0;
     DECLARE v_errno INT;
     DECLARE v_sqlstate CHAR(5);
     DECLARE v_message TEXT;
 
-    DECLARE cur CURSOR FOR
-        SELECT schema_name FROM tmp_eligible_schemas ORDER BY schema_name;
-
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
-    
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         GET DIAGNOSTICS CONDITION 1
             v_errno = MYSQL_ERRNO,
             v_sqlstate = RETURNED_SQLSTATE,
             v_message = MESSAGE_TEXT;
+        SELECT CONCAT('❌ Erreur load_ecritures_acd: ', v_message) AS error_detail;
         ROLLBACK;
-        DROP TEMPORARY TABLE IF EXISTS tmp_eligible_schemas;
-        SELECT CONCAT('❌ Erreur SQL #', v_errno, ' (SQLSTATE ', v_sqlstate, '): ', v_message) AS error_detail,
-               db_name AS schema_en_cours,
-               CONCAT('Bases traitées: ', db_count, '/', db_total) AS progression;
     END;
 
     SELECT '🔄 Chargement ecritures_mensuelles (ACD)...' AS status;
 
-    -- Créer table temporaire des bases éligibles
-    DROP TEMPORARY TABLE IF EXISTS tmp_eligible_schemas;
-    CREATE TEMPORARY TABLE tmp_eligible_schemas (
-        schema_name VARCHAR(100) PRIMARY KEY
-    );
-
-    INSERT INTO tmp_eligible_schemas (schema_name)
-    SELECT TABLE_SCHEMA
-    FROM information_schema.TABLES
-    WHERE TABLE_SCHEMA LIKE 'compta\_%'
-      AND TABLE_SCHEMA NOT IN ('compta_000000', 'compta_zz', 'compta_gombertcOLD', 'compta_gombertcold')
-      AND TABLE_NAME IN ('histo_ligne_ecriture', 'histo_ecriture', 'ligne_ecriture', 'ecriture', 'compte', 'journal')
-    GROUP BY TABLE_SCHEMA
-    HAVING COUNT(DISTINCT TABLE_NAME) = 6;
-
-    SELECT COUNT(*) INTO db_total FROM tmp_eligible_schemas;
-    SELECT CONCAT('📊 ', db_total, ' bases compta_* à traiter') AS status;
-
-    -- Supprimer les données ACD existantes
+    -- Suppression des données ACD existantes
     DELETE FROM transform_compta.ecritures_mensuelles WHERE source = 'ACD';
-    
+
     SET FOREIGN_KEY_CHECKS = 0;
     SET UNIQUE_CHECKS = 0;
 
-    OPEN cur;
+    -- ══════════════════════════════════════════════════════════════
+    -- AGRÉGATION DIRECTE DEPUIS raw_acd (1 requête au lieu de 3500)
+    -- Utilise les 18 indexes optimisés
+    -- ══════════════════════════════════════════════════════════════
+    INSERT INTO transform_compta.ecritures_mensuelles (
+        source,
+        code_dossier,
+        siren,
+        period_month,
+        compte,
+        compte_normalized,
+        compte_libelle,
+        journal_code,
+        journal_libelle,
+        debits,
+        credits,
+        nb_ecritures,
+        date_derniere_saisie
+    )
+    SELECT
+        'ACD' AS source,
+        agg.dossier_code AS code_dossier,
+        da.siren,
+        agg.period_month,
+        agg.compte,
+        -- 🎯 Normalisation des comptes (C* → 4110, F* → 4100)
+        CASE
+            WHEN agg.compte LIKE 'C%' THEN '4110'
+            WHEN agg.compte LIKE 'F%' THEN '4100'
+            ELSE LEFT(agg.compte, 4)
+        END AS compte_normalized,
+        agg.compte_libelle,
+        agg.journal_code,
+        agg.journal_libelle,
+        ROUND(SUM(agg.debit_ligne), 2) AS debits,
+        ROUND(SUM(agg.credit_ligne), 2) AS credits,
+        COUNT(*) AS nb_ecritures,
+        MAX(agg.date_saisie) AS date_derniere_saisie
+    FROM (
+        -- ───────────────────────────────────────────────────────────
+        -- Historique (histo_ligne_ecriture + histo_ecriture)
+        -- ───────────────────────────────────────────────────────────
+        SELECT
+            hle.dossier_code,
+            STR_TO_DATE(CONCAT(he.HE_ANNEE, LPAD(he.HE_MOIS, 2, '0'), '01'), '%Y%m%d') AS period_month,
+            he.HE_ANNEE AS annee,
+            COALESCE(he.JNL_CODE, 'UNKNOWN') AS journal_code,
+            j.JNL_LIB AS journal_libelle,
+            hle.CPT_CODE AS compte,
+            c.CPT_LIB AS compte_libelle,
+            hle.HLE_CRE_ORG AS credit_ligne,
+            hle.HLE_DEB_ORG AS debit_ligne,
+            he.HE_DATE_SAI AS date_saisie
+        FROM raw_acd.histo_ligne_ecriture hle
+        INNER JOIN raw_acd.histo_ecriture he
+            ON he.dossier_code = hle.dossier_code
+            AND he.HE_CODE = hle.HE_CODE
+        LEFT JOIN raw_acd.compte c
+            ON c.dossier_code = hle.dossier_code
+            AND c.CPT_CODE = hle.CPT_CODE
+        LEFT JOIN raw_acd.journal j
+            ON j.dossier_code = he.dossier_code
+            AND j.JNL_CODE = he.JNL_CODE
+        WHERE he.HE_ANNEE >= YEAR(CURDATE()) - 3
 
-    read_loop: LOOP
-        FETCH cur INTO db_name;
-        IF done THEN LEAVE read_loop; END IF;
+        UNION ALL
 
-        SET db_count = db_count + 1;
-
-        IF db_count = 1 OR db_count % 50 = 0 OR db_count = db_total THEN
-            SELECT CONCAT('[', db_count, '/', db_total, '] ', db_name, 
-                          ' (', ROUND(db_count * 100 / db_total, 1), '%)') AS progression;
-        END IF;
-
-        -- INSERT avec comptes C/F agrégés en Cxxxxx/Fxxxxx
-        SET sql_text = CONCAT("
-            INSERT INTO transform_compta.ecritures_mensuelles (
-                source, code_dossier, siren, period_month, compte, compte_libelle,
-                journal_code, journal_libelle, debits, credits, nb_ecritures, date_derniere_saisie
-            )
-            SELECT
-                'ACD' AS source,
-                UPPER(SUBSTRING_INDEX('", db_name, "', '_', -1)) AS code_dossier,
-                da.siren,
-                prev.period_month,
-                prev.compte,
-                prev.libelle_compte,
-                prev.journal_code,
-                prev.journal_libelle,
-                ROUND(SUM(prev.debit_ligne), 2) AS debits,
-                ROUND(SUM(prev.credit_ligne), 2) AS credits,
-                COUNT(*) AS nb_ecritures,
-                MAX(prev.date_saisie) AS date_derniere_saisie
-            FROM (
-                SELECT
-                    STR_TO_DATE(CONCAT(he.HE_ANNEE, LPAD(he.HE_MOIS,2,'0'), '01'), '%Y%m%d') AS period_month,
-                    he.HE_ANNEE AS annee,
-                    COALESCE(he.JNL_CODE, 'UNKNOWN') AS journal_code,
-                    j.JNL_LIB AS journal_libelle,
-                    CASE
-                        WHEN hle.CPT_CODE LIKE 'C%' THEN 'Cxxxxx'
-                        WHEN hle.CPT_CODE LIKE 'F%' THEN 'Fxxxxx'
-                        ELSE hle.CPT_CODE
-                    END AS compte,
-                    CASE
-                        WHEN hle.CPT_CODE LIKE 'C%' THEN 'Cxxxxx'
-                        WHEN hle.CPT_CODE LIKE 'F%' THEN 'Fxxxxx'
-                        ELSE c.CPT_LIB
-                    END AS libelle_compte,
-                    hle.HLE_CRE_ORG AS credit_ligne,
-                    hle.HLE_DEB_ORG AS debit_ligne,
-                    he.HE_DATE_SAI AS date_saisie
-                FROM `", db_name, "`.histo_ligne_ecriture hle
-                JOIN `", db_name, "`.histo_ecriture he ON he.HE_CODE = hle.HE_CODE
-                LEFT JOIN `", db_name, "`.compte c ON c.CPT_CODE = hle.CPT_CODE
-                LEFT JOIN `", db_name, "`.journal j ON j.JNL_CODE = he.JNL_CODE
-                WHERE he.HE_ANNEE >= YEAR(CURDATE()) - 3
-                
-                UNION ALL
-                
-                SELECT
-                    STR_TO_DATE(CONCAT(e.ECR_ANNEE, LPAD(e.ECR_MOIS,2,'0'), '01'), '%Y%m%d') AS period_month,
-                    e.ECR_ANNEE AS annee,
-                    COALESCE(e.JNL_CODE, 'UNKNOWN') AS journal_code,
-                    j.JNL_LIB AS journal_libelle,
-                    CASE
-                        WHEN le.CPT_CODE LIKE 'C%' THEN 'Cxxxxx'
-                        WHEN le.CPT_CODE LIKE 'F%' THEN 'Fxxxxx'
-                        ELSE le.CPT_CODE
-                    END AS compte,
-                    CASE
-                        WHEN le.CPT_CODE LIKE 'C%' THEN 'Cxxxxx'
-                        WHEN le.CPT_CODE LIKE 'F%' THEN 'Fxxxxx'
-                        ELSE c.CPT_LIB
-                    END AS libelle_compte,
-                    le.LE_CRE_ORG AS credit_ligne,
-                    le.LE_DEB_ORG AS debit_ligne,
-                    e.ECR_DATE_SAI AS date_saisie
-                FROM `", db_name, "`.ligne_ecriture le
-                JOIN `", db_name, "`.ecriture e ON e.ECR_CODE = le.ECR_CODE
-                LEFT JOIN `", db_name, "`.compte c ON c.CPT_CODE = le.CPT_CODE
-                LEFT JOIN `", db_name, "`.journal j ON j.JNL_CODE = e.JNL_CODE
-                WHERE e.ECR_ANNEE >= YEAR(CURDATE()) - 3
-            ) AS prev
-            LEFT JOIN transform_compta.dossiers_acd da 
-                ON da.code_dia = UPPER(SUBSTRING_INDEX('", db_name, "', '_', -1))
-            WHERE prev.annee >= YEAR(CURDATE()) - 3
-            GROUP BY
-                prev.period_month, prev.journal_code, prev.journal_libelle, 
-                prev.compte, prev.libelle_compte, da.siren
-            ON DUPLICATE KEY UPDATE
-                debits = VALUES(debits),
-                credits = VALUES(credits),
-                nb_ecritures = VALUES(nb_ecritures),
-                date_derniere_saisie = VALUES(date_derniere_saisie),
-                compte_libelle = COALESCE(VALUES(compte_libelle), compte_libelle),
-                journal_libelle = COALESCE(VALUES(journal_libelle), journal_libelle)
-        ");
-
-        SET last_sql = sql_text;
-        PREPARE stmt FROM sql_text;
-        EXECUTE stmt;
-        DEALLOCATE PREPARE stmt;
-
-    END LOOP;
-
-    CLOSE cur;
-    DROP TEMPORARY TABLE IF EXISTS tmp_eligible_schemas;
+        -- ───────────────────────────────────────────────────────────
+        -- Courant (ligne_ecriture + ecriture)
+        -- ───────────────────────────────────────────────────────────
+        SELECT
+            le.dossier_code,
+            STR_TO_DATE(CONCAT(e.ECR_ANNEE, LPAD(e.ECR_MOIS, 2, '0'), '01'), '%Y%m%d') AS period_month,
+            e.ECR_ANNEE AS annee,
+            COALESCE(e.JNL_CODE, 'UNKNOWN') AS journal_code,
+            j.JNL_LIB AS journal_libelle,
+            le.CPT_CODE AS compte,
+            c.CPT_LIB AS compte_libelle,
+            le.LE_CRE_ORG AS credit_ligne,
+            le.LE_DEB_ORG AS debit_ligne,
+            e.ECR_DATE_SAI AS date_saisie
+        FROM raw_acd.ligne_ecriture le
+        INNER JOIN raw_acd.ecriture e
+            ON e.dossier_code = le.dossier_code
+            AND e.ECR_CODE = le.ECR_CODE
+        LEFT JOIN raw_acd.compte c
+            ON c.dossier_code = le.dossier_code
+            AND c.CPT_CODE = le.CPT_CODE
+        LEFT JOIN raw_acd.journal j
+            ON j.dossier_code = e.dossier_code
+            AND j.JNL_CODE = e.JNL_CODE
+        WHERE e.ECR_ANNEE >= YEAR(CURDATE()) - 3
+    ) AS agg
+    LEFT JOIN transform_compta.dossiers_acd da
+        ON da.code_dia COLLATE utf8mb4_unicode_ci = agg.dossier_code
+    WHERE agg.annee >= YEAR(CURDATE()) - 3
+    GROUP BY
+        agg.dossier_code,
+        agg.period_month,
+        agg.compte,
+        agg.journal_code,
+        agg.journal_libelle,
+        agg.compte_libelle,
+        da.siren
+    ON DUPLICATE KEY UPDATE
+        debits = VALUES(debits),
+        credits = VALUES(credits),
+        nb_ecritures = VALUES(nb_ecritures),
+        date_derniere_saisie = VALUES(date_derniere_saisie),
+        compte_libelle = COALESCE(VALUES(compte_libelle), compte_libelle),
+        journal_libelle = COALESCE(VALUES(journal_libelle), journal_libelle);
 
     SET FOREIGN_KEY_CHECKS = 1;
     SET UNIQUE_CHECKS = 1;
 
-    SELECT CONCAT('✅ ecritures_mensuelles (ACD): ', db_count, ' bases traitées, ',
+    SELECT CONCAT('✅ ecritures_mensuelles (ACD): ',
                   (SELECT COUNT(*) FROM transform_compta.ecritures_mensuelles WHERE source = 'ACD'),
-                  ' lignes') AS status;
+                  ' lignes') AS resultat;
 END//
 
 -- ─────────────────────────────────────────────────────────────
 -- TRANSFORM : load_ecritures_pennylane
 -- Charge les écritures agrégées depuis raw_pennylane
+-- Inspiré de creationPennyLaneMonthlyBalances
+-- Ajoute compte_normalized (LEFT(compte, 4))
 -- ─────────────────────────────────────────────────────────────
 DROP PROCEDURE IF EXISTS transform_compta.load_ecritures_pennylane//
 CREATE PROCEDURE transform_compta.load_ecritures_pennylane()
 BEGIN
+    DECLARE v_errno INT;
+    DECLARE v_sqlstate CHAR(5);
+    DECLARE v_message TEXT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            v_errno = MYSQL_ERRNO,
+            v_sqlstate = RETURNED_SQLSTATE,
+            v_message = MESSAGE_TEXT;
+        SELECT CONCAT('❌ Erreur load_ecritures_pennylane: ', v_message) AS error_detail;
+        ROLLBACK;
+    END;
+
     SELECT '🔄 Chargement ecritures_mensuelles (PENNYLANE)...' AS status;
-    
-    -- Supprimer les données Pennylane existantes
+
+    -- Suppression des données PENNYLANE existantes
     DELETE FROM transform_compta.ecritures_mensuelles WHERE source = 'PENNYLANE';
-    
+
+    SET FOREIGN_KEY_CHECKS = 0;
+    SET UNIQUE_CHECKS = 0;
+
+    -- ══════════════════════════════════════════════════════════════
+    -- AGRÉGATION DIRECTE depuis raw_pennylane.pl_general_ledger
+    -- Inspiré de creationPennyLaneMonthlyBalances
+    -- ══════════════════════════════════════════════════════════════
     INSERT INTO transform_compta.ecritures_mensuelles (
-        source, code_dossier, siren, period_month, compte, compte_libelle,
-        journal_code, journal_libelle, debits, credits, nb_ecritures, date_derniere_saisie
+        source,
+        code_dossier,
+        siren,
+        period_month,
+        compte,
+        compte_normalized,
+        compte_libelle,
+        journal_code,
+        journal_libelle,
+        debits,
+        credits,
+        nb_ecritures,
+        date_derniere_saisie
     )
-    SELECT 
+    SELECT
         'PENNYLANE' AS source,
-        gl.company_name AS code_dossier,
-        LEFT(c.registration_number, 9) AS siren,
+        CAST(gl.company_id AS CHAR) AS code_dossier,
+        dp.siren,
         DATE_FORMAT(gl.txn_date, '%Y-%m-01') AS period_month,
         gl.compte,
+        -- 🎯 Normalisation PennyLane : toujours LEFT(compte, 4)
+        LEFT(gl.compte, 4) AS compte_normalized,
         MAX(gl.compte_label) AS compte_libelle,
         COALESCE(gl.journal_code, '') AS journal_code,
         MAX(gl.journal_label) AS journal_libelle,
@@ -320,16 +329,28 @@ BEGIN
         COUNT(*) AS nb_ecritures,
         MAX(gl.document_updated_at) AS date_derniere_saisie
     FROM raw_pennylane.pl_general_ledger gl
-    LEFT JOIN raw_pennylane.pl_companies c ON c.company_id = gl.company_id
-    WHERE gl.txn_date >= DATE_SUB(CURDATE(), INTERVAL 3 YEAR)
-    GROUP BY 
-        gl.company_name,
-        LEFT(c.registration_number, 9),
+    LEFT JOIN transform_compta.dossiers_pennylane dp
+        ON dp.company_id = gl.company_id
+    -- Pas de filtre sur les 3 dernières années pour PennyLane (garder tout l'historique)
+    GROUP BY
+        gl.company_id,
         DATE_FORMAT(gl.txn_date, '%Y-%m-01'),
         gl.compte,
-        COALESCE(gl.journal_code, '');
-    
-    SELECT CONCAT('✅ ecritures_mensuelles (PENNYLANE): ', ROW_COUNT(), ' lignes') AS status;
+        COALESCE(gl.journal_code, '')
+    ON DUPLICATE KEY UPDATE
+        debits = VALUES(debits),
+        credits = VALUES(credits),
+        nb_ecritures = VALUES(nb_ecritures),
+        date_derniere_saisie = VALUES(date_derniere_saisie),
+        compte_libelle = COALESCE(VALUES(compte_libelle), compte_libelle),
+        journal_libelle = COALESCE(VALUES(journal_libelle), journal_libelle);
+
+    SET FOREIGN_KEY_CHECKS = 1;
+    SET UNIQUE_CHECKS = 1;
+
+    SELECT CONCAT('✅ ecritures_mensuelles (PENNYLANE): ',
+                  (SELECT COUNT(*) FROM transform_compta.ecritures_mensuelles WHERE source = 'PENNYLANE'),
+                  ' lignes') AS resultat;
 END//
 
 DELIMITER ;

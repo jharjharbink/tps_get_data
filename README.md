@@ -28,7 +28,7 @@ Pipeline ETL 4 couches pour centraliser les données de 3500+ dossiers comptable
 ├─────────────────────────────────────────────────────────────┤
 │  └── transform_compta                                       │
 │       ├── dossiers_acd, dossiers_pennylane                 │
-│       ├── ecritures_mensuelles (C*/F* agrégés)             │
+│       ├── ecritures_mensuelles (C*/F* agrégés + normalized)│
 │       ├── ecritures_tiers_detaillees (401/411)             │
 │       └── exercices, temps_collaborateurs                  │
 └─────────────────────────────────────────────────────────────┘
@@ -130,6 +130,37 @@ mysql -u root -p -e "SELECT COUNT(DISTINCT dossier_code) FROM raw_acd.histo_lign
 - **[COMMANDS.md](COMMANDS.md)** - Guide complet de toutes les commandes
 - **[README_raw_acd.md](README_raw_acd.md)** - Documentation détaillée de l'import ACD
 - **[claude.md](claude.md)** - Documentation projet et vision stratégique
+
+---
+
+## 📋 Règles métier : compte_normalized
+
+### Objectif
+La colonne `compte_normalized` (4 caractères) harmonise les comptes entre sources (ACD/PennyLane) pour faciliter les analyses cross-sources.
+
+### Règles de normalisation
+
+**Source ACD** :
+- Comptes clients `C*` → `4110`
+- Comptes fournisseurs `F*` → `4100`
+- Autres comptes → 4 premiers caractères
+
+**Source PennyLane** :
+- Tous les comptes → 4 premiers caractères (comptes uniquement en chiffres)
+
+### Exemples
+
+| Source | Compte original | compte_normalized | Type |
+|--------|----------------|-------------------|------|
+| ACD | `C00123` | `4110` | Client |
+| ACD | `CDUPONT` | `4110` | Client |
+| ACD | `F99456` | `4100` | Fournisseur |
+| ACD | `512000` | `5120` | Banque |
+| PennyLane | `411123` | `4111` | Client |
+| PennyLane | `401456` | `4014` | Fournisseur |
+| PennyLane | `512000` | `5120` | Banque |
+
+**Utilisation** : Table `transform_compta.ecritures_mensuelles`
 
 ---
 
