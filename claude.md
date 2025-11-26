@@ -338,7 +338,34 @@ ORDER BY HE_ANNEE;
 5. ⏳ **Valider la qualité** des données transformées
 6. 📋 **NEXT : Réorganisation procédures** (voir ci-dessous)
 
-### Phase 2.1 : Réorganisation procédures TRANSFORM (NEXT STEP)
+### Phase 2.1 : Standardisation collation (NEXT STEP IMMÉDIAT)
+
+**Problème identifié** : Mismatch collation entre RAW (utf8mb4_unicode_ci) et TRANSFORM (utf8mb4_general_ci)
+
+**Erreur** :
+```
+Illegal mix of collations (utf8mb4_general_ci,IMPLICIT) and (utf8mb4_unicode_ci,IMPLICIT)
+```
+
+**Solution retenue** : Standardiser sur `utf8mb4_general_ci` pour toutes les couches
+
+**Commandes à exécuter** :
+```bash
+# 1. Modifier la collation dans raw_acd tables
+sed -i 's/utf8mb4_unicode_ci/utf8mb4_general_ci/g' sql/02b_raw_acd_tables.sql
+
+# 2. Clean + recreate + import
+bash bash/util/clean_all.sh <<< "oui" && ./run_pipeline.sh --data-only --acd-full
+
+# 3. Fill TRANSFORM/MDM/MART
+./run_pipeline.sh --skip-raw
+```
+
+**Durée estimée** : ~30 min pour ACD import
+
+---
+
+### Phase 2.2 : Réorganisation procédures TRANSFORM
 
 **Objectif** : Organiser les procédures par source de données au lieu de part1/part2
 
@@ -438,8 +465,114 @@ ORDER BY HE_ANNEE;
 
 ---
 
+## 🔧 Phase 7 : Refonte orchestration CLI (EN PLANIFICATION)
+
+### Problématique actuelle
+
+Le script `run_pipeline.sh` utilise un système de flags complexe qui manque de clarté :
+- Flags multiples et difficiles à combiner (`--data-only --acd-full --skip-init`)
+- Pas de granularité par source ET par couche
+- Pas de vérification des dépendances
+- Mélange anglais/français
+
+### Architecture cible : CLI moderne avec 3 commandes
+
+**Script principal** : `./data` (sans extension .sh)
+
+```bash
+# Commande 1: Nettoyage granulaire
+./data clean --all                      # Tout supprimer
+./data clean --raw                      # raw_acd + raw_dia + raw_pennylane
+./data clean --acd --force              # raw_acd uniquement sans confirmation
+./data clean --transform --mdm --mart   # Couches analytiques
+
+# Commande 2: Création bases/tables
+./data create-db --all                  # Tout créer
+./data create-db --acd                  # raw_acd uniquement
+./data create-db --transform --mdm      # Couches analytiques
+
+# Commande 3: Import données
+./data import-data --all                          # Full import (DIA + ACD + Pennylane)
+./data import-data --all --mode=incremental       # Incremental où supporté
+./data import-data --acd --mode=incremental       # ACD incrémental uniquement
+./data import-data --transform --check-deps       # TRANSFORM avec vérif RAW
+./data import-data --all --transform --mdm        # Pipeline complet jusqu'à MDM
+```
+
+### Caractéristiques clés
+
+1. **Granularité multi-axes**
+   - Par source : `--acd`, `--dia`, `--pennylane`
+   - Par couche : `--raw`, `--transform`, `--mdm`, `--mart`
+
+2. **Vérification récursive des dépendances**
+   ```bash
+   $ ./data import-data --transform
+
+   [CHECK] Vérification des dépendances...
+   ❌ raw_acd schema manquant
+
+   Plan de résolution :
+     1. ./data create-db --acd
+     2. ./data import-data --acd
+     3. ./data import-data --transform
+
+   Exécuter automatiquement ? [y/N]: _
+   ```
+
+3. **Support incrémental extensible**
+   - ACD : ✅ Supporté (filtre sur ECR_DATE_SAI)
+   - DIA : ⏳ À venir (architecture prête)
+   - Pennylane : ⏳ À venir (architecture prête)
+
+4. **Architecture modulaire**
+   ```
+   projet_test/
+   ├── data                       # Script principal
+   ├── bash/
+   │   ├── lib/
+   │   │   ├── cli.sh            # Parsing arguments
+   │   │   ├── colors.sh         # Logging colorisé
+   │   │   ├── deps.sh           # Vérification dépendances
+   │   │   └── sources.sh        # Abstraction sources
+   │   │
+   │   ├── sources/              # Configuration par source
+   │   │   ├── acd.sh           # SUPPORTS_INCREMENTAL=true
+   │   │   ├── dia.sh           # SUPPORTS_INCREMENTAL=false
+   │   │   └── pennylane.sh     # SUPPORTS_INCREMENTAL=false
+   │   │
+   │   └── commands/             # Implémentation
+   │       ├── clean.sh
+   │       ├── create-db.sh
+   │       └── import-data.sh
+   ```
+
+5. **Compatibilité et migration**
+   - `run_pipeline.sh` conservé comme wrapper déprécié
+   - Documentation migration dans MIGRATION.md
+   - Mapping complet ancien → nouveau système
+
+### Avantages de la refonte
+
+- ✅ **Clarté** : 3 commandes vs 15+ flags
+- ✅ **Testabilité** : Composants isolés et testables
+- ✅ **Évolutivité** : Ajout d'une source = 1 fichier de config
+- ✅ **UX** : Vérifications + suggestions automatiques
+- ✅ **Maintenabilité** : Code modulaire et organisé
+
+### État du projet
+
+📋 **Plan complet documenté** dans `/root/.claude/plans/spicy-meandering-dream.md`
+
+**Effort estimé** : 10-12h développement + 2-3h tests
+
+**Prochaine étape** : Validation utilisateur avant implémentation
+
+---
+
 ## 📞 Support
 
 - **Logs** : `logs/pipeline_YYYYMMDD_HHMMSS.log`
 - **Git** : https://github.com/jharjharbink/tps_get_data
 - **Doc ACD** : README_raw_acd.md
+- **Plan CLI** : /root/.claude/plans/spicy-meandering-dream.md

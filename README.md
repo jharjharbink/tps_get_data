@@ -721,8 +721,9 @@ Rotation automatique : conservation de 30 jours
 1. ✅ Adapter les procédures pour utiliser raw_acd
 2. ✅ Ajout compte_normalized (4 caractères)
 3. ✅ Performances : 30-60 min → 2-5 min (90% plus rapide)
-4. ⏳ Tester les agrégations ecritures_mensuelles
-5. 📋 **NEXT : Réorganisation procédures par source** (voir [claude.md](claude.md) Phase 2.1)
+4. ⏳ **NEXT IMMÉDIAT : Standardisation collation** (utf8mb4_general_ci) - voir [claude.md](claude.md) Phase 2.1
+5. ⏳ Tester les agrégations ecritures_mensuelles
+6. 📋 Réorganisation procédures par source (voir [claude.md](claude.md) Phase 2.2)
 
 ### Phase 3 : Enrichissement MDM
 1. Déduplication SIREN
@@ -734,11 +735,34 @@ Rotation automatique : conservation de 30 jours
 - MART Contrôle de gestion (interne/externe)
 - MART Production client (holdings)
 
+### Phase 7 : Refonte orchestration CLI 📋 EN PLANIFICATION
+
+**Objectif** : Remplacer `run_pipeline.sh` par une CLI moderne avec 3 commandes principales.
+
+**Architecture cible** :
+```bash
+./data clean --all                           # Nettoyage granulaire
+./data create-db --acd --transform           # Création par source/couche
+./data import-data --all --mode=incremental  # Import avec gestion incrémentale
+```
+
+**Caractéristiques** :
+- ✅ Granularité par source (`--acd`, `--dia`, `--pennylane`) et couche (`--raw`, `--transform`)
+- ✅ Vérification récursive des dépendances avec suggestions automatiques
+- ✅ Support incrémental extensible (ACD ✅, DIA/Pennylane ⏳)
+- ✅ Architecture modulaire et évolutive
+
+**Documentation complète** : Voir [claude.md](claude.md) Phase 7 et `/root/.claude/plans/spicy-meandering-dream.md`
+
+**Effort estimé** : 10-12h développement + 2-3h tests
+
 ---
 
 ## 📞 Support
 
 - **Documentation** : Voir [COMMANDS.md](COMMANDS.md) et [README_raw_acd.md](README_raw_acd.md)
+- **Documentation technique** : [claude.md](claude.md)
+- **Plan CLI refactoring** : `/root/.claude/plans/spicy-meandering-dream.md`
 - **Logs** : `logs/pipeline_YYYYMMDD_HHMMSS.log`
 - **Issues** : [GitHub Issues](https://github.com/jharjharbink/tps_get_data/issues)
 

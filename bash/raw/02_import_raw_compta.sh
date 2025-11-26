@@ -185,38 +185,38 @@ import_one_database() {
         local TMP_FILE="/tmp/acd_import_${DB}_${TABLE}.tsv"
 
         # ─── Colonnes et requête SELECT selon la table ───
-        local COLUMNS=""
+        local LOAD_COLUMNS=""
         local SELECT_COLS=""
         local WHERE_CLAUSE=""
 
         case $TABLE in
             histo_ligne_ecriture)
-                COLUMNS="(dossier_code, CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET)"
+                LOAD_COLUMNS="(dossier_code, CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET)"
                 SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, COALESCE(HLE_LETP1, 0), HLE_DATE_LET"
             ;;
 
             histo_ecriture)
-                COLUMNS="(dossier_code, HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE)"
+                LOAD_COLUMNS="(dossier_code, HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE)"
                 SELECT_COLS="'$DOSSIER_CODE', HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE"
             ;;
 
             ligne_ecriture)
-                COLUMNS="(dossier_code, CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, LE_LETP1, LE_DATE_LET)"
+                LOAD_COLUMNS="(dossier_code, CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, LE_LETP1, LE_DATE_LET)"
                 SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, COALESCE(LE_LETP1, 0), LE_DATE_LET"
             ;;
 
             ecriture)
-                COLUMNS="(dossier_code, ECR_CODE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE)"
+                LOAD_COLUMNS="(dossier_code, ECR_CODE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE)"
                 SELECT_COLS="'$DOSSIER_CODE', ECR_CODE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE"
             ;;
 
             compte)
-                COLUMNS="(dossier_code, CPT_CODE, CPT_LIB)"
+                LOAD_COLUMNS="(dossier_code, CPT_CODE, CPT_LIB)"
                 SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, CPT_LIB"
             ;;
 
             journal)
-                COLUMNS="(dossier_code, JNL_CODE, JNL_LIB, JNL_TYPE)"
+                LOAD_COLUMNS="(dossier_code, JNL_CODE, JNL_LIB, JNL_TYPE)"
                 SELECT_COLS="'$DOSSIER_CODE', JNL_CODE, JNL_LIB, JNL_TYPE"
             ;;
         esac
@@ -255,15 +255,21 @@ import_one_database() {
 
         # ─── 1. Extraction ACD vers fichier TSV ───
         local EXTRACT_START=$(date +%s.%N)
+        local ERR_FILE="/tmp/acd_err_$$.log"
 
         if ! $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" \
                  -u "$ACD_USER" -p"$ACD_PASS" \
                  --skip-column-names \
                  -e "SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\` $WHERE_CLAUSE" \
-                 > "$TMP_FILE" 2>&1; then
+                 > "$TMP_FILE" 2>"$ERR_FILE"; then
             log "ERROR" "Échec extraction $TABLE depuis $DB"
+            if [ -s "$ERR_FILE" ]; then
+                echo "  Détails: $(cat $ERR_FILE | head -3)"
+            fi
+            rm -f "$TMP_FILE" "$ERR_FILE"
             continue
         fi
+        rm -f "$ERR_FILE"
 
         local EXTRACT_END=$(date +%s.%N)
         local EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc)
@@ -276,16 +282,28 @@ import_one_database() {
         # ─── 2. LOAD local dans raw_acd ───
         local LOAD_START=$(date +%s.%N)
 
+        # if ! $MYSQL $MYSQL_OPTS --local-infile=1 -e "
+        #     LOAD DATA LOCAL INFILE '$TMP_FILE'
+        #     REPLACE INTO TABLE raw_acd.$TABLE
+        #     FIELDS TERMINATED BY '\t'
+        #     LINES TERMINATED BY '\n'
+        #     $LOAD_COLUMNS
+        # " 2>/dev/null; then
+        #     log "ERROR" "Échec import $TABLE pour $DB"
+        #     rm -f "$TMP_FILE"
+        #     continue
+        # fi
+
         if ! $MYSQL $MYSQL_OPTS --local-infile=1 -e "
             LOAD DATA LOCAL INFILE '$TMP_FILE'
             REPLACE INTO TABLE raw_acd.$TABLE
             FIELDS TERMINATED BY '\t'
             LINES TERMINATED BY '\n'
-            $COLUMNS
-        " 2>&1; then
-            log "ERROR" "Échec import $TABLE pour $DB"
+            $LOAD_COLUMNS
+        "; then
+            log "ERROR" "Échec import $TABLE pour $DB (erreur LOAD DATA ci-dessus)"
             rm -f "$TMP_FILE"
-            continue
+            exit 1
         fi
 
         local LOAD_END=$(date +%s.%N)

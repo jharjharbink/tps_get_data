@@ -177,7 +177,9 @@ if [ "$DATA_ONLY" = true ]; then
     log_subsection "MODE DATA-ONLY : Import des données RAW"
 
     log "INFO" "Import raw_acd (ACD - mode: $ACD_MODE)..."
-    bash "$SCRIPT_DIR/bash/raw/02_import_raw_compta.sh" "$ACD_MODE"
+    # Convertir --acd-full → --full et --acd-incremental → --incremental
+    ACD_SCRIPT_MODE="${ACD_MODE//--acd-/--}"
+    bash "$SCRIPT_DIR/bash/raw/02_import_raw_compta.sh" "$ACD_SCRIPT_MODE"
 
     log "INFO" "Import raw_dia (DIA/valoxy)..."
     bash "$SCRIPT_DIR/bash/raw/01_import_raw_dia.sh"

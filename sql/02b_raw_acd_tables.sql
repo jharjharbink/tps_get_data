@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS histo_ligne_ecriture (
     HLE_PIECE VARCHAR(16) COMMENT 'Chemin dans la GED ?',
     HLE_LET VARCHAR(5) COMMENT 'Lettrage', 
     HLE_LETP1 SMALLINT COMMENT 'Lettrage P1 ?', 
-    HLE_DATE_LET DATE COMMENT 'Date Lettrage',
+    HLE_DATE_LET VARCHAR(20) COMMENT 'Date Lettrage',
     PRIMARY KEY (dossier_code, HLE_CODE)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS histo_ligne_ecriture (
 CREATE TABLE IF NOT EXISTS histo_ecriture (
     dossier_code VARCHAR(20) NOT NULL,
     HE_CODE BIGINT NOT NULL COMMENT 'ID écriture',
-    HE_DATE_SAI DATE COMMENT 'Date de Saisie',
+    HE_DATE_SAI VARCHAR(20) COMMENT 'Date de Saisie',
     HE_ANNEE SMALLINT NOT NULL,
     HE_MOIS TINYINT DEFAULT NULL,
     JNL_CODE VARCHAR(32) DEFAULT NULL,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS ligne_ecriture (
     LE_PIECE VARCHAR(16) COMMENT 'Chemin dans la GED ?',
     LE_LET VARCHAR(5) COMMENT 'Lettrage', 
     LE_LETP1 SMALLINT COMMENT 'Lettrage P1 ?', 
-    LE_DATE_LET DATE COMMENT 'Date Lettrage',
+    LE_DATE_LET VARCHAR(20) COMMENT 'Date Lettrage',
     PRIMARY KEY (dossier_code, LE_CODE)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS ligne_ecriture (
 CREATE TABLE IF NOT EXISTS ecriture (
     dossier_code VARCHAR(20) NOT NULL,
     ECR_CODE BIGINT NOT NULL COMMENT 'ID écriture',
-    ECR_DATE_SAI DATE COMMENT 'Date de Saisie',
+    ECR_DATE_SAI VARCHAR(20) COMMENT 'Date de Saisie',
     ECR_ANNEE SMALLINT NOT NULL,
     ECR_MOIS TINYINT DEFAULT NULL,
     JNL_CODE VARCHAR(32) DEFAULT NULL,
