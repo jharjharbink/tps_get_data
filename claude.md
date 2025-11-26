@@ -78,12 +78,18 @@ Actuellement, nous sommes en phase de **validation de la couche RAW** :
 6. `journal` - Journaux
 
 **Mécanisme** :
-- Mode `--full` : TRUNCATE + réimport complet
+- Mode `--full` : TRUNCATE + réimport complet de tous les dossiers
 - Mode `--incremental` : Import avec filtre `WHERE ECR_DATE_SAI > last_sync_date` + `REPLACE INTO`
   - ✅ Tables incrémentales : `ecriture`, `ligne_ecriture` (synchronisation depuis dernière date)
   - ⏭️ Tables de référence : `compte`, `journal`, `histo_*` (ignorées en mode incrémental)
   - ✅ Gestion NULL : `COALESCE(LE_LETP1, 0)` pour éviter erreurs MySQL LOAD DATA
-- Tracking via `sync_tracking` (last_sync_date, rows_count, duration)
+- Mode `--dossier-full CODE` : DELETE + réimport d'un seul dossier
+- Mode `--dossier-incremental CODE` : Import incrémental d'un seul dossier
+- Mode `--debug` : Affichage requêtes SQL et timings détaillés
+- Tracking via `sync_tracking_by_dossier` (tracking granulaire par dossier)
+- Gestion automatique des indexes :
+  - Mode `--full` : Recréation de tous les indexes optimisés
+  - Mode `--incremental` : ANALYZE TABLE sur tables modifiées
 
 **Performance** :
 - Import séquentiel (machine source avec 1 CPU - pas de parallélisme possible)
@@ -99,8 +105,11 @@ Actuellement, nous sommes en phase de **validation de la couche RAW** :
 - ✅ Suppression overhead : last_sync_date récupéré 1x au lieu de 3500x
 - ✅ Mécanisme d'import incrémental ACD (validé en prod - synchronisation depuis dernière date)
 - ✅ Gestion NULL values dans colonnes integer (COALESCE appliqué sur LE_LETP1)
+- ✅ Tracking par dossier (sync_tracking_by_dossier implémenté)
+- ✅ Import par dossier individuel (--dossier-full / --dossier-incremental)
+- ✅ Mode debug avec affichage requêtes SQL et timings
+- ✅ Gestion automatique des indexes optimisés (18 indexes basés sur analyse TRANSFORM)
 - 🔄 Gestion des erreurs et reprises
-- ❌ Tracking par dossier (à implémenter)
 
 ---
 

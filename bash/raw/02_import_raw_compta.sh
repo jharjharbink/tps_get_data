@@ -2,8 +2,8 @@
 # ============================================================
 # IMPORT RAW_ACD - Import centralisé des données comptables ACD
 # Importe 6 tables spécifiques depuis compta_* vers raw_acd
-# Modes: --full (TRUNCATE) ou --incremental (ON DUPLICATE KEY)
-# VERSION CORRIGÉE - Ordre SQL LOAD DATA LOCAL INFILE fixé
+# Modes: --full, --incremental, --dossier-full, --dossier-incremental
+# Tracking par dossier avec sync_tracking_by_dossier
 # ============================================================
 set -euo pipefail
 
@@ -32,53 +32,52 @@ INCREMENTAL_ONLY_TABLES=(
 
 # ─── Arguments ─────────────────────────────────────────────
 MODE="full"  # Par défaut: import complet
-PARALLEL_JOBS=1  # Pas de parallélisme pour protéger la source ACD
-SINCE_DATE=""
+DEBUG=false
+TARGET_DOSSIER=""
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --full              Import complet (TRUNCATE + réimport) [défaut]"
-    echo "  --incremental       Import incrémental (depuis last_sync_date)"
-    echo "  --since DATE        Import depuis une date spécifique"
-    echo "                      Format: \"23/11/2025 13:32:43\" (DD/MM/YYYY HH:MM:SS)"
+    echo "  --full                      Import complet de tous les dossiers (TRUNCATE + réimport) [défaut]"
+    echo "  --incremental               Import incrémental de tous les dossiers (depuis last_sync_date)"
+    echo "  --dossier-full CODE         Import complet d'un dossier spécifique (DELETE + réimport)"
+    echo "  --dossier-incremental CODE  Import incrémental d'un dossier spécifique"
+    echo "  --debug                     Mode debug (affiche requêtes SQL et timings détaillés)"
     echo ""
     echo "Exemples:"
-    echo "  $0 --full"
-    echo "  $0 --incremental"
-    echo "  $0 --since \"01/01/2025 00:00:00\""
+    echo "  $0 --full                                   # Import complet de tous les dossiers"
+    echo "  $0 --incremental                            # Import incrémental de tous"
+    echo "  $0 --dossier-full SCIANNAFOO                # Import complet du dossier SCIANNAFOO"
+    echo "  $0 --dossier-incremental SCIANNAFOO --debug # Import incrémental avec debug"
     exit 0
-}
-
-# Fonction pour convertir DD/MM/YYYY HH:MM:SS vers YYYY-MM-DD HH:MM:SS
-convert_date_format() {
-    local input_date="$1"
-    # Format: 23/11/2025 13:32:43 -> 2025-11-23 13:32:43
-    echo "$input_date" | awk -F'[/ :]' '{printf "%s-%s-%s %s:%s:%s", $3, $2, $1, $4, $5, $6}'
 }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --full)        MODE="full"; shift ;;
-        --incremental) MODE="incremental"; shift ;;
-        --since)       MODE="since"; SINCE_DATE="$2"; shift 2 ;;
-        -h|--help)     usage ;;
-        *)             echo "Option inconnue: $1"; usage ;;
+        --full)                  MODE="full"; shift ;;
+        --incremental)           MODE="incremental"; shift ;;
+        --dossier-full)          MODE="dossier-full"; TARGET_DOSSIER="$2"; shift 2 ;;
+        --dossier-incremental)   MODE="dossier-incremental"; TARGET_DOSSIER="$2"; shift 2 ;;
+        --debug)                 DEBUG=true; shift ;;
+        -h|--help)               usage ;;
+        *)                       echo "Option inconnue: $1"; usage ;;
     esac
 done
 
-# Convertir la date si mode --since
-if [ "$MODE" = "since" ]; then
-    if [ -z "$SINCE_DATE" ]; then
-        echo "Erreur: --since nécessite une date"
+# Vérifier que TARGET_DOSSIER est fourni pour les modes dossier-*
+if [[ "$MODE" == "dossier-full" || "$MODE" == "dossier-incremental" ]]; then
+    if [ -z "$TARGET_DOSSIER" ]; then
+        log "ERROR" "Le code dossier est requis pour le mode $MODE"
         usage
     fi
-    SINCE_DATE=$(convert_date_format "$SINCE_DATE")
-    log "INFO" "Date convertie: $SINCE_DATE"
+    TARGET_DOSSIER=$(echo "$TARGET_DOSSIER" | tr '[:lower:]' '[:upper:]')
 fi
 
 log_section "IMPORT RAW_ACD (ACD) - Mode: $MODE"
+if [ "$DEBUG" = true ]; then
+    log "INFO" "🐛 Mode DEBUG activé - Affichage des requêtes SQL et timings"
+fi
 
 # ─── Vérifier connexion ACD ────────────────────────────────
 log "INFO" "Test connexion vers $ACD_HOST:$ACD_PORT..."
@@ -107,203 +106,66 @@ check_database_has_required_tables() {
             AND table_name = '$TABLE'
         " 2>/dev/null)
 
-        if [ "$EXISTS" != "1" ]; then
-            return 1  # Table manquante
+        if [ "$EXISTS" -eq 0 ]; then
+            return 1
         fi
     done
-    return 0  # Toutes les tables présentes
+    return 0
 }
 
-# ─── Récupérer les bases compta_* ─────────────────────────
-log "INFO" "Récupération de la liste des bases compta_*..."
-ALL_DATABASES=$($MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" --skip-column-names -e "
-    SELECT schema_name
-    FROM information_schema.schemata
-    WHERE schema_name LIKE 'compta_%'
-" | grep "compta_")
+# ─── Fonction: Récupérer la last_sync_date pour un dossier et une table ────
+get_last_sync_date_for_dossier() {
+    local DOSSIER_CODE="$1"
+    local TABLE_NAME="$2"
 
-if [ -z "$ALL_DATABASES" ]; then
-    log "ERROR" "Aucune base compta_* trouvée sur $ACD_HOST"
-    exit 1
-fi
+    local LAST_SYNC=$($MYSQL $MYSQL_OPTS -N -e "
+        SELECT IFNULL(DATE_FORMAT(last_sync_date, '%Y-%m-%d %H:%i:%s'), '2000-01-01 00:00:00')
+        FROM raw_acd.sync_tracking_by_dossier
+        WHERE dossier_code = '$DOSSIER_CODE'
+        AND table_name = '$TABLE_NAME'
+        LIMIT 1
+    " 2>/dev/null || echo "2000-01-01 00:00:00")
 
-# ─── Filtrer les bases éligibles ──────────────────────────
-log "INFO" "Vérification des tables requises dans chaque base..."
-ELIGIBLE_DATABASES=()
-EXCLUDED_COUNT=0
+    echo "$LAST_SYNC"
+}
 
-for DB in $ALL_DATABASES; do
-    # Vérifier si la base est dans la liste d'exclusion
-    SKIP=false
-    for EXCLUDED in "${EXCLUDED_DATABASES[@]}"; do
-        if [ "$DB" = "$EXCLUDED" ]; then
-            SKIP=true
-            break
-        fi
-    done
+# ─── Fonction: Mettre à jour sync_tracking_by_dossier ─────
+update_sync_tracking() {
+    local DOSSIER_CODE="$1"
+    local TABLE_NAME="$2"
+    local ROWS_IMPORTED="$3"
+    local SYNC_TYPE="$4"  # full ou incremental
 
-    if [ "$SKIP" = true ]; then
-        ((EXCLUDED_COUNT++)) || true
-        continue
-    fi
+    $MYSQL $MYSQL_OPTS -e "
+        INSERT INTO raw_acd.sync_tracking_by_dossier
+            (dossier_code, table_name, last_sync_date, last_sync_type, last_status, rows_imported)
+        VALUES
+            ('$DOSSIER_CODE', '$TABLE_NAME', NOW(), '$SYNC_TYPE', 'success', $ROWS_IMPORTED)
+        ON DUPLICATE KEY UPDATE
+            last_sync_date = NOW(),
+            last_sync_type = '$SYNC_TYPE',
+            last_status = 'success',
+            rows_imported = $ROWS_IMPORTED,
+            updated_at = NOW()
+    " 2>/dev/null
+}
 
-    # Vérifier que les 6 tables requises existent
-    if check_database_has_required_tables "$DB"; then
-        ELIGIBLE_DATABASES+=("$DB")
-    else
-        log "WARNING" "Base $DB ignorée : tables manquantes"
-        ((EXCLUDED_COUNT++)) || true
-    fi
-done
-
-NB_ELIGIBLE=${#ELIGIBLE_DATABASES[@]}
-log "INFO" "$NB_ELIGIBLE bases éligibles trouvées ($EXCLUDED_COUNT exclues)"
-
-if [ "$NB_ELIGIBLE" -eq 0 ]; then
-    log "ERROR" "Aucune base éligible trouvée"
-    exit 1
-fi
-
-# MODE PRODUCTION: Importer TOUTES les bases éligibles
-ELIGIBLE_DATABASES_LIMITED=("${ELIGIBLE_DATABASES[@]}")
-NB_TO_PROCESS=${#ELIGIBLE_DATABASES_LIMITED[@]}
-
-log "INFO" "Traitement de toutes les $NB_TO_PROCESS bases éligibles"
-
-# ─── Mode INCREMENTAL: Dossiers éligibles ─────────────────
-if [ "$MODE" = "incremental" ]; then
-    # Vérifier si les tables incrémentales ont déjà été synchronisées
-    ECRITURE_LAST_SYNC=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT last_sync_date
-        FROM raw_acd.sync_tracking
-        WHERE table_name = 'ecriture'
-    " 2>/dev/null || echo "")
-
-    if [ -z "$ECRITURE_LAST_SYNC" ]; then
-        log "ERROR" "Aucune synchronisation précédente trouvée pour 'ecriture'"
-        log "ERROR" "Le mode --incremental nécessite un import --full initial"
-        log "INFO" "Exécutez d'abord : $0 --full"
-        exit 1
-    fi
-
-    log "INFO" "Dernière synchronisation: $ECRITURE_LAST_SYNC"
-
-    # Récupérer les dossiers déjà présents dans raw_acd.ecriture
-    KNOWN_DOSSIERS=$($MYSQL $MYSQL_OPTS -N -e "
-        SELECT DISTINCT dossier_code
-        FROM raw_acd.ecriture
-        ORDER BY dossier_code
-    " 2>/dev/null || echo "")
-
-    if [ -z "$KNOWN_DOSSIERS" ]; then
-        log "ERROR" "Aucun dossier trouvé dans raw_acd.ecriture"
-        log "ERROR" "Le mode --incremental nécessite des données existantes"
-        exit 1
-    fi
-
-    # Construire la liste des bases compta_* correspondantes
-    KNOWN_DOSSIERS_ARRAY=()
-    for CODE in $KNOWN_DOSSIERS; do
-        KNOWN_DOSSIERS_ARRAY+=("compta_$CODE")
-    done
-
-    # Utiliser uniquement les dossiers connus
-    ELIGIBLE_DATABASES_LIMITED=("${KNOWN_DOSSIERS_ARRAY[@]}")
-    NB_TO_PROCESS=${#ELIGIBLE_DATABASES_LIMITED[@]}
-
-    log "INFO" "Mode incrémental: $NB_TO_PROCESS dossiers à mettre à jour"
-
-    # Capturer le timestamp du DÉBUT de l'import (pour éviter perte de données)
-    IMPORT_START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-    log "INFO" "Timestamp de départ de l'import : $IMPORT_START_TIME"
-fi
-
-# ─── Filtrer les dossiers déjà importés (reprise après crash) ──
-if [ "$MODE" = "incremental" ] && [ -n "$IMPORT_START_TIME" ]; then
-    log "INFO" "Vérification des dossiers déjà synchronisés depuis $IMPORT_START_TIME..."
-
-    # En mode incrémental, vérifier seulement les tables incrémentales
-    EXPECTED_TABLE_COUNT=${#INCREMENTAL_ONLY_TABLES[@]}
-
-    ALREADY_SYNCED=$($MYSQL $MYSQL_OPTS raw_acd -N -e "
-        SELECT dossier_code
-        FROM sync_tracking_by_dossier
-        WHERE last_sync_date >= '$IMPORT_START_TIME'
-          AND last_status = 'success'
-          AND table_name IN ('ecriture', 'ligne_ecriture')
-        GROUP BY dossier_code
-        HAVING COUNT(DISTINCT table_name) = $EXPECTED_TABLE_COUNT
-    " 2>/dev/null || echo "")
-
-    if [ -n "$ALREADY_SYNCED" ]; then
-        FILTERED_DATABASES=()
-        SKIPPED_COUNT=0
-
-        for DB in "${ELIGIBLE_DATABASES_LIMITED[@]}"; do
-            DOSSIER_CODE="${DB#compta_}"
-
-            if echo "$ALREADY_SYNCED" | grep -qx "$DOSSIER_CODE"; then
-                ((SKIPPED_COUNT++)) || true
-            else
-                FILTERED_DATABASES+=("$DB")
-            fi
-        done
-
-        if [ $SKIPPED_COUNT -gt 0 ]; then
-            log "INFO" "✅ $SKIPPED_COUNT dossiers déjà synchronisés (reprise après crash)"
-            ELIGIBLE_DATABASES_LIMITED=("${FILTERED_DATABASES[@]}")
-            NB_TO_PROCESS=${#ELIGIBLE_DATABASES_LIMITED[@]}
-        fi
-    fi
-fi
-
-# ─── Mode FULL: TRUNCATE des tables ───────────────────────
-if [ "$MODE" = "full" ]; then
-    log "INFO" "Mode FULL: Vidage des tables raw_acd..."
-    $MYSQL $MYSQL_OPTS raw_acd -e "
-        SET FOREIGN_KEY_CHECKS=0;
-        TRUNCATE TABLE histo_ligne_ecriture;
-        TRUNCATE TABLE histo_ecriture;
-        TRUNCATE TABLE ligne_ecriture;
-        TRUNCATE TABLE ecriture;
-        TRUNCATE TABLE compte;
-        TRUNCATE TABLE journal;
-        SET FOREIGN_KEY_CHECKS=1;
-    "
-    log "SUCCESS" "Tables vidées"
-fi
-
-# ─── Mode INCREMENTAL: Récupérer last_sync_date UNE FOIS ──
-declare -A LAST_SYNC_DATES
-
-if [ "$MODE" = "incremental" ]; then
-    log "INFO" "Récupération des dernières dates de synchronisation..."
-    for TABLE in "${REQUIRED_TABLES[@]}"; do
-        LAST_SYNC=$($MYSQL $MYSQL_OPTS -N -e "
-            SELECT IFNULL(last_sync_date, '2000-01-01 00:00:00')
-            FROM raw_acd.sync_tracking
-            WHERE table_name = '$TABLE'
-        " 2>/dev/null || echo "2000-01-01 00:00:00")
-        LAST_SYNC_DATES[$TABLE]="$LAST_SYNC"
-        log "INFO" "  - $TABLE: $LAST_SYNC"
-    done
-fi
-
-# ─── Fonction: Importer une base (optimisée) ──────────────
+# ─── Fonction: Import d'une base ──────────────────────────
 import_one_database() {
     local DB="$1"
-    local DOSSIER_CODE="${DB#compta_}"
+    local DOSSIER_CODE=$(echo "$DB" | sed 's/compta_//' | tr '[:lower:]' '[:upper:]')
 
-    echo ""
-    echo "╔════════════════════════════════════════════════════════╗"
-    echo "║ Import: $DB (dossier: $DOSSIER_CODE)"
-    echo "╚════════════════════════════════════════════════════════╝"
+    if [ "$DEBUG" = true ]; then
+        log "INFO" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        log "INFO" "📦 Base: $DB | Dossier: $DOSSIER_CODE"
+        log "INFO" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    fi
 
-    # Boucle des 6 tables
-    for TABLE in histo_ligne_ecriture histo_ecriture ligne_ecriture ecriture compte journal; do
+    # Parcourir les 6 tables
+    for TABLE in "${REQUIRED_TABLES[@]}"; do
 
         # ─── Mode incrémental : Ignorer les tables non-incrémentales ───
-        if [ "$MODE" = "incremental" ] || [ "$MODE" = "since" ]; then
+        if [ "$MODE" = "incremental" ] || [ "$MODE" = "dossier-incremental" ]; then
             TABLE_IS_INCREMENTAL=false
             for INCR_TABLE in "${INCREMENTAL_ONLY_TABLES[@]}"; do
                 if [ "$TABLE" = "$INCR_TABLE" ]; then
@@ -313,21 +175,27 @@ import_one_database() {
             done
 
             if [ "$TABLE_IS_INCREMENTAL" = false ]; then
-                printf "  → %-25s ⏭️  Skipped (not incremental)\n" "$TABLE..."
+                if [ "$DEBUG" = true ]; then
+                    log "INFO" "  → $TABLE (⏭️  skipped - not incremental)"
+                fi
                 continue
             fi
         fi
 
+        local TMP_FILE="/tmp/acd_import_${DB}_${TABLE}.tsv"
+
+        # ─── Colonnes et requête SELECT selon la table ───
         local COLUMNS=""
         local SELECT_COLS=""
+        local WHERE_CLAUSE=""
 
-        case "$TABLE" in
+        case $TABLE in
             histo_ligne_ecriture)
                 COLUMNS="(dossier_code, CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET)"
-                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET"
+                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, COALESCE(HLE_LETP1, 0), HLE_DATE_LET"
             ;;
 
-            histo_ecriture) 
+            histo_ecriture)
                 COLUMNS="(dossier_code, HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE)"
                 SELECT_COLS="'$DOSSIER_CODE', HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE"
             ;;
@@ -353,28 +221,18 @@ import_one_database() {
             ;;
         esac
 
-        # Temp TSV
-        TMP_FILE="/tmp/acd_${DB}_${TABLE}_$$.tsv"
-
-        printf "  → %-25s " "$TABLE..."
-        local START=$(date +%s)
-
-        # Déterminer le filtre WHERE selon la table et le mode
-        local WHERE_CLAUSE=""
-
-        if [ "$MODE" = "incremental" ] || [ "$MODE" = "since" ]; then
-            case "$TABLE" in
+        # ─── Filtre WHERE pour les tables incrémentales ───
+        if [ "$MODE" = "incremental" ] || [ "$MODE" = "dossier-incremental" ]; then
+            case $TABLE in
                 ecriture)
                     # Filtre direct sur ECR_DATE_SAI
-                    local SYNC_DATE="${LAST_SYNC_DATES[$TABLE]:-2000-01-01 00:00:00}"
-                    if [ "$MODE" = "since" ]; then SYNC_DATE="$SINCE_DATE"; fi
+                    local SYNC_DATE=$(get_last_sync_date_for_dossier "$DOSSIER_CODE" "$TABLE")
                     WHERE_CLAUSE="WHERE ECR_DATE_SAI > STR_TO_DATE('$SYNC_DATE', '%Y-%m-%d %H:%i:%s')"
                 ;;
 
                 ligne_ecriture)
                     # Jointure avec ecriture sur ECR_CODE, filtre sur ECR_DATE_SAI
-                    local SYNC_DATE="${LAST_SYNC_DATES[$TABLE]:-2000-01-01 00:00:00}"
-                    if [ "$MODE" = "since" ]; then SYNC_DATE="$SINCE_DATE"; fi
+                    local SYNC_DATE=$(get_last_sync_date_for_dossier "$DOSSIER_CODE" "$TABLE")
                     WHERE_CLAUSE="WHERE EXISTS (
                         SELECT 1 FROM \`$DB\`.ecriture e
                         WHERE e.ECR_CODE = \`$DB\`.ligne_ecriture.ECR_CODE
@@ -384,186 +242,248 @@ import_one_database() {
             esac
         fi
 
-        # 1. Extraction ACD vers fichier TSV (avec filtre WHERE si applicable)
+        # ─── Mode DEBUG : Afficher la requête SQL ───
+        if [ "$DEBUG" = true ]; then
+            echo ""
+            log "INFO" "  → Table: $TABLE"
+            echo ""
+            log "INFO" "  📋 REQUÊTE SQL :"
+            echo "SELECT $SELECT_COLS"
+            echo "FROM \`$DB\`.\`$TABLE\` $WHERE_CLAUSE"
+            echo ""
+        fi
+
+        # ─── 1. Extraction ACD vers fichier TSV ───
+        local EXTRACT_START=$(date +%s.%N)
+
         if ! $MYSQL -h "$ACD_HOST" -P "$ACD_PORT" \
                  -u "$ACD_USER" -p"$ACD_PASS" \
                  --skip-column-names \
                  -e "SELECT $SELECT_COLS FROM \`$DB\`.\`$TABLE\` $WHERE_CLAUSE" \
-                 > "$TMP_FILE" 2>/tmp/acd_err_$$.log
-        then
-            echo "❌ ERREUR (ACD)"
-            cat /tmp/acd_err_$$.log
-            rm -f "$TMP_FILE" /tmp/acd_err_$$.log
-            return 1
+                 > "$TMP_FILE" 2>&1; then
+            log "ERROR" "Échec extraction $TABLE depuis $DB"
+            continue
         fi
 
-        # 2. Load dans raw_acd local
-        # IMPORTANT: FIELDS/LINES doivent être AVANT la liste des colonnes
-        # REPLACE INTO : gestion des doublons en mode incrémental
-        if ! $MYSQL $MYSQL_OPTS -e "
+        local EXTRACT_END=$(date +%s.%N)
+        local EXTRACT_DURATION=$(echo "$EXTRACT_END - $EXTRACT_START" | bc)
+        local ROWS_EXTRACTED=$(wc -l < "$TMP_FILE")
+
+        if [ "$DEBUG" = true ]; then
+            printf "  ⏱️  Extraction: %s lignes en %.2fs\n" "$ROWS_EXTRACTED" "$EXTRACT_DURATION"
+        fi
+
+        # ─── 2. LOAD local dans raw_acd ───
+        local LOAD_START=$(date +%s.%N)
+
+        if ! $MYSQL $MYSQL_OPTS --local-infile=1 -e "
             LOAD DATA LOCAL INFILE '$TMP_FILE'
             REPLACE INTO TABLE raw_acd.$TABLE
             FIELDS TERMINATED BY '\t'
             LINES TERMINATED BY '\n'
-            $COLUMNS;
-        " 2>/tmp/local_err_$$.log
-        then
-            echo "❌ ERREUR (LOCAL)"
-            echo "Requête SQL:"
-            echo "LOAD DATA LOCAL INFILE '$TMP_FILE'"
-            echo "INTO TABLE raw_acd.$TABLE"
-            echo "FIELDS TERMINATED BY '\t'"
-            echo "LINES TERMINATED BY '\n'"
-            echo "$COLUMNS;"
-            echo "---"
-            cat /tmp/local_err_$$.log
-            rm -f "$TMP_FILE" /tmp/local_err_$$.log
-            return 1
+            $COLUMNS
+        " 2>&1; then
+            log "ERROR" "Échec import $TABLE pour $DB"
+            rm -f "$TMP_FILE"
+            continue
         fi
 
-        rm -f "$TMP_FILE" /tmp/acd_err_$$.log /tmp/local_err_$$.log
+        local LOAD_END=$(date +%s.%N)
+        local LOAD_DURATION=$(echo "$LOAD_END - $LOAD_START" | bc)
 
-        # 3. Statistiques locales
-        local COUNT=$($MYSQL $MYSQL_OPTS -N -e \
-            "SELECT COUNT(*) FROM raw_acd.$TABLE WHERE dossier_code='$DOSSIER_CODE'" \
-            2>/dev/null || echo 0)
+        if [ "$DEBUG" = true ]; then
+            printf "  ⏱️  LOAD DATA: %.2fs\n" "$LOAD_DURATION"
+            log "SUCCESS" "  ✅ $TABLE importé"
+            echo ""
+        fi
 
-        local END=$(date +%s)
-        printf "✓ (%ds, %s lignes)\n" "$((END - START))" "$COUNT"
+        # ─── 3. Mettre à jour le tracking par dossier ───
+        local SYNC_TYPE="full"
+        if [ "$MODE" = "incremental" ] || [ "$MODE" = "dossier-incremental" ]; then
+            SYNC_TYPE="incremental"
+        fi
+
+        update_sync_tracking "$DOSSIER_CODE" "$TABLE" "$ROWS_EXTRACTED" "$SYNC_TYPE"
+
+        # Nettoyage
+        rm -f "$TMP_FILE"
     done
-
-    # Mettre à jour le tracking PAR DOSSIER (nouvelle table)
-    if [ "$MODE" = "incremental" ] || [ "$MODE" = "since" ]; then
-        for TABLE in "${INCREMENTAL_ONLY_TABLES[@]}"; do
-            local ROWS_IMPORTED=$([ -f "$TMP_FILE" ] && wc -l < "$TMP_FILE" 2>/dev/null || echo 0)
-
-            $MYSQL $MYSQL_OPTS raw_acd -e "
-                INSERT INTO sync_tracking_by_dossier
-                    (table_name, dossier_code, last_sync_date, last_sync_type, last_status, rows_imported)
-                VALUES
-                    ('$TABLE', '$DOSSIER_CODE', '$IMPORT_START_TIME', '$MODE', 'success', $ROWS_IMPORTED)
-                ON DUPLICATE KEY UPDATE
-                    last_sync_date = '$IMPORT_START_TIME',
-                    last_sync_type = '$MODE',
-                    last_status = 'success',
-                    rows_imported = $ROWS_IMPORTED,
-                    updated_at = CURRENT_TIMESTAMP;
-            " 2>/dev/null || true  # Ne pas bloquer si erreur de tracking
-        done
-    fi
-
-    echo "OK: $DB"
 }
 
-# Exporter la fonction et les variables pour xargs
-export -f import_one_database
-export MODE SINCE_DATE
-export ACD_HOST ACD_PORT ACD_USER ACD_PASS
-export MYSQL MYSQL_OPTS
+# ─── MODE: dossier-full (DELETE + réimport d'un seul dossier) ───
+if [ "$MODE" = "dossier-full" ]; then
+    log "INFO" "🗑️  Suppression des données du dossier $TARGET_DOSSIER..."
 
-# Exporter les dates de sync en mode incremental
-if [ "$MODE" = "incremental" ]; then
     for TABLE in "${REQUIRED_TABLES[@]}"; do
-        VAR_NAME="SYNC_DATE_${TABLE}"
-        export "${VAR_NAME}=${LAST_SYNC_DATES[$TABLE]}"
+        $MYSQL $MYSQL_OPTS -e "DELETE FROM raw_acd.$TABLE WHERE dossier_code = '$TARGET_DOSSIER'" 2>/dev/null
     done
+
+    log "SUCCESS" "Données du dossier $TARGET_DOSSIER supprimées"
+
+    # Vérifier que la base compta_* existe
+    local TARGET_DB="compta_$(echo "$TARGET_DOSSIER" | tr '[:upper:]' '[:lower:]')"
+
+    if ! check_database_has_required_tables "$TARGET_DB"; then
+        log "ERROR" "La base $TARGET_DB n'existe pas ou n'a pas les 6 tables requises"
+        exit 1
+    fi
+
+    log "INFO" "Import complet du dossier $TARGET_DOSSIER depuis $TARGET_DB..."
+    import_one_database "$TARGET_DB"
+
+    log "SUCCESS" "✅ Import complet du dossier $TARGET_DOSSIER terminé"
+
+    # Analyser les tables modifiées
+    log "INFO" "Analyse des tables modifiées..."
+    for TABLE in "${REQUIRED_TABLES[@]}"; do
+        $MYSQL $MYSQL_OPTS -e "ANALYZE TABLE raw_acd.$TABLE" > /dev/null 2>&1
+    done
+    log "SUCCESS" "Tables analysées"
+
+    exit 0
 fi
 
-# ─── Créer fichier temporaire avec liste des bases ────────
-TMP_BDDS_FILE="/tmp/acd_eligible_bases_$$.txt"
-printf "%s\n" "${ELIGIBLE_DATABASES_LIMITED[@]}" > "$TMP_BDDS_FILE"
+# ─── MODE: dossier-incremental (import incrémental d'un seul dossier) ───
+if [ "$MODE" = "dossier-incremental" ]; then
+    local TARGET_DB="compta_$(echo "$TARGET_DOSSIER" | tr '[:upper:]' '[:lower:]')"
 
-# ─── Import séquentiel (pas de parallélisme sur la source) ─
-log "INFO" "Lancement des imports (traitement séquentiel pour protéger la source)..."
-log "INFO" "Nombre de bases à traiter: $NB_TO_PROCESS"
+    if ! check_database_has_required_tables "$TARGET_DB"; then
+        log "ERROR" "La base $TARGET_DB n'existe pas ou n'a pas les 6 tables requises"
+        exit 1
+    fi
+
+    log "INFO" "Import incrémental du dossier $TARGET_DOSSIER depuis $TARGET_DB..."
+    import_one_database "$TARGET_DB"
+
+    log "SUCCESS" "✅ Import incrémental du dossier $TARGET_DOSSIER terminé"
+
+    # Analyser les tables modifiées
+    log "INFO" "Analyse des tables incrémentales..."
+    $MYSQL $MYSQL_OPTS -e "ANALYZE TABLE raw_acd.ecriture, raw_acd.ligne_ecriture" > /dev/null 2>&1
+    log "SUCCESS" "Tables analysées"
+
+    exit 0
+fi
+
+# ─── MODE: full (TRUNCATE + réimport de tous les dossiers) ───
+if [ "$MODE" = "full" ]; then
+    log "INFO" "🗑️  TRUNCATE de toutes les tables raw_acd..."
+
+    for TABLE in "${REQUIRED_TABLES[@]}"; do
+        $MYSQL $MYSQL_OPTS -e "TRUNCATE TABLE raw_acd.$TABLE" 2>/dev/null
+        log "INFO" "  → $TABLE vidée"
+    done
+
+    log "SUCCESS" "Tables vidées"
+fi
+
+# ─── Lister toutes les bases compta_* éligibles ───
+log "INFO" "🔍 Recherche des bases compta_* éligibles..."
+
+DATABASES=()
+while IFS= read -r DB; do
+    # Exclure les bases dans EXCLUDED_DATABASES
+    EXCLUDED=false
+    for EXCLUDED_DB in "${EXCLUDED_DATABASES[@]}"; do
+        if [ "$DB" = "$EXCLUDED_DB" ]; then
+            EXCLUDED=true
+            break
+        fi
+    done
+
+    if [ "$EXCLUDED" = true ]; then
+        continue
+    fi
+
+    # Vérifier que la base a bien les 6 tables
+    if check_database_has_required_tables "$DB"; then
+        DATABASES+=("$DB")
+    fi
+done < <($MYSQL -h "$ACD_HOST" -P "$ACD_PORT" -u "$ACD_USER" -p"$ACD_PASS" -N -e "
+    SELECT SCHEMA_NAME
+    FROM information_schema.SCHEMATA
+    WHERE SCHEMA_NAME LIKE 'compta_%'
+    ORDER BY SCHEMA_NAME
+" 2>/dev/null)
+
+TOTAL_DBS=${#DATABASES[@]}
+log "INFO" "📊 $TOTAL_DBS bases compta_* trouvées avec les 6 tables requises"
+
+if [ "$TOTAL_DBS" -eq 0 ]; then
+    log "ERROR" "Aucune base éligible trouvée"
+    exit 1
+fi
+
+# ─── Import de toutes les bases ───
+CURRENT=0
 START_TIME=$(date +%s)
 
-# Compteur pour la progression
-COUNTER=0
-BATCH_SIZE=5
+for DB in "${DATABASES[@]}"; do
+    CURRENT=$((CURRENT + 1))
 
-cat "$TMP_BDDS_FILE" | xargs -P "$PARALLEL_JOBS" -I {} bash -c \
-    "import_one_database '{}'" \
-    2>&1 | while read line; do
-        echo "[$(date '+%H:%M:%S')] $line"
+    if [ "$DEBUG" = false ]; then
+        printf "\r[%d/%d] Traitement de %-30s" "$CURRENT" "$TOTAL_DBS" "$DB"
+    fi
 
-        # Incrémenter et afficher progression tous les 5 imports
-        if [[ "$line" == OK:* ]]; then
-            ((COUNTER++)) || true
-            if (( COUNTER % BATCH_SIZE == 0 )); then
-                ELAPSED=$(($(date +%s) - START_TIME))
-                REMAINING=$(($NB_TO_PROCESS - COUNTER))
-                AVG_TIME=$((ELAPSED / COUNTER))
-                ETA=$((REMAINING * AVG_TIME))
-
-                echo ""
-                echo "════════════════════════════════════════════════════════"
-                echo "📊 PROGRESSION: $COUNTER / $NB_TO_PROCESS bases traitées ($(( COUNTER * 100 / NB_TO_PROCESS ))%)"
-                echo "⏱️  Temps écoulé: $(($ELAPSED / 60))min $(($ELAPSED % 60))s"
-                echo "⏳ Temps moyen par base: ${AVG_TIME}s"
-                echo "🎯 ETA restant: $(($ETA / 3600))h $(($ETA % 3600 / 60))min"
-                echo "════════════════════════════════════════════════════════"
-                echo ""
-            fi
-        fi
-    done | tee -a "$LOG_FILE"
-
-# ─── Nettoyage ─────────────────────────────────────────────
-rm -f "$TMP_BDDS_FILE"
+    import_one_database "$DB"
+done
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 
-# ─── Mise à jour sync_tracking ────────────────────────────
-log "INFO" "Mise à jour du tracking..."
+echo ""  # Nouvelle ligne après la progression
+log "SUCCESS" "✅ Import terminé en ${DURATION}s"
 
-# Déterminer la date à enregistrer selon le mode
-if [ "$MODE" = "incremental" ] && [ -n "$IMPORT_START_TIME" ]; then
-    SYNC_DATE="$IMPORT_START_TIME"
-    log "INFO" "Utilisation du timestamp de départ : $SYNC_DATE"
-    log "INFO" "⚠️  Cela garantit qu'aucune donnée insérée pendant l'import ne sera perdue"
-else
-    SYNC_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-    log "INFO" "Utilisation du timestamp actuel : $SYNC_DATE"
+# ─── Gestion des indexes selon le mode ───
+if [ "$MODE" = "full" ]; then
+    log "INFO" "🔧 Création des indexes optimisés..."
+
+    # Drop indexes avant de les recréer
+    $MYSQL $MYSQL_OPTS -e "
+        -- Drop existing indexes
+        ALTER TABLE raw_acd.compte DROP INDEX IF EXISTS idx_dossier;
+        ALTER TABLE raw_acd.compte DROP INDEX IF EXISTS idx_dossier_compte;
+        ALTER TABLE raw_acd.ecriture DROP INDEX IF EXISTS idx_dossier_annee_mois;
+        ALTER TABLE raw_acd.ecriture DROP INDEX IF EXISTS idx_dossier_journal;
+        ALTER TABLE raw_acd.ecriture DROP INDEX IF EXISTS idx_date_sai;
+        ALTER TABLE raw_acd.histo_ecriture DROP INDEX IF EXISTS idx_dossier_annee_mois;
+        ALTER TABLE raw_acd.histo_ecriture DROP INDEX IF EXISTS idx_dossier_journal;
+        ALTER TABLE raw_acd.journal DROP INDEX IF EXISTS idx_dossier;
+        ALTER TABLE raw_acd.journal DROP INDEX IF EXISTS idx_dossier_code;
+        ALTER TABLE raw_acd.ligne_ecriture DROP INDEX IF EXISTS idx_dossier_compte;
+        ALTER TABLE raw_acd.ligne_ecriture DROP INDEX IF EXISTS idx_dossier_ecriture;
+        ALTER TABLE raw_acd.ligne_ecriture DROP INDEX IF EXISTS idx_compte;
+        ALTER TABLE raw_acd.histo_ligne_ecriture DROP INDEX IF EXISTS idx_dossier_compte;
+        ALTER TABLE raw_acd.histo_ligne_ecriture DROP INDEX IF EXISTS idx_dossier_ecriture;
+        ALTER TABLE raw_acd.histo_ligne_ecriture DROP INDEX IF EXISTS idx_compte;
+    " 2>/dev/null || true
+
+    # Recréer les indexes
+    $MYSQL $MYSQL_OPTS < "$SCRIPT_DIR/../sql/02b_raw_acd_tables.sql" 2>&1 | grep -v "Duplicate key name" || true
+
+    log "SUCCESS" "Indexes créés"
+
+elif [ "$MODE" = "incremental" ]; then
+    log "INFO" "🔧 Analyse des tables incrémentales..."
+    $MYSQL $MYSQL_OPTS -e "ANALYZE TABLE raw_acd.ecriture, raw_acd.ligne_ecriture" > /dev/null 2>&1
+    log "SUCCESS" "Tables analysées"
 fi
 
-# Tracker uniquement les tables effectivement traitées
-if [ "$MODE" = "incremental" ] || [ "$MODE" = "since" ]; then
-    TABLES_TO_TRACK=("${INCREMENTAL_ONLY_TABLES[@]}")
-else
-    TABLES_TO_TRACK=("${REQUIRED_TABLES[@]}")
-fi
+# ─── Statistiques finales ───
+log "INFO" "📊 Statistiques finales:"
 
-for TABLE in "${TABLES_TO_TRACK[@]}"; do
-    ROW_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_acd.$TABLE")
-
-    $MYSQL $MYSQL_OPTS raw_acd -e "
-        UPDATE sync_tracking
-        SET last_sync_date = '$SYNC_DATE',
-            last_sync_type = '$MODE',
-            rows_count = $ROW_COUNT,
-            last_status = 'success',
-            last_duration_sec = $DURATION
-        WHERE table_name = '$TABLE';
-    "
-done
-
-# ─── Stats finales ─────────────────────────────────────────
-log "SUCCESS" "Import raw_acd terminé (mode: $MODE)"
-log "INFO" "Durée: $(($DURATION / 60)) min $(($DURATION % 60)) sec"
-
-echo ""
-log "INFO" "Statistiques raw_acd:"
-$MYSQL $MYSQL_OPTS raw_acd -t -e "
+$MYSQL $MYSQL_OPTS -e "
     SELECT
-        table_name,
-        FORMAT(rows_count, 0) as nb_lignes,
-        last_sync_type as mode,
-        DATE_FORMAT(last_sync_date, '%Y-%m-%d %H:%i') as derniere_synchro
-    FROM sync_tracking
-    ORDER BY table_name;
-"
+        'ecriture' as table_name,
+        COUNT(*) as rows_count,
+        COUNT(DISTINCT dossier_code) as dossiers_count
+    FROM raw_acd.ecriture
+    UNION ALL
+    SELECT
+        'ligne_ecriture',
+        COUNT(*),
+        COUNT(DISTINCT dossier_code)
+    FROM raw_acd.ligne_ecriture
+" | column -t
 
-# Nombre de dossiers uniques
-NB_DOSSIERS=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(DISTINCT dossier_code) FROM raw_acd.histo_ligne_ecriture")
-log "INFO" "Nombre de dossiers centralisés : $NB_DOSSIERS"
+log "SUCCESS" "🎉 Import raw_acd terminé avec succès !"
