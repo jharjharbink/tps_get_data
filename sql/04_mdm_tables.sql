@@ -10,8 +10,7 @@ USE mdm;
 -- Référentiel unique des dossiers avec correspondance multi-sources
 -- Jointure ACD ↔ Pennylane sur LEFT(SIRET,9) = LEFT(registration_number,9)
 -- ─────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS dossiers;
-CREATE TABLE dossiers (
+CREATE TABLE IF NOT EXISTS dossiers (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     
     -- Identifiants par source
@@ -78,8 +77,7 @@ CREATE TABLE dossiers (
 -- Table : collaborateurs
 -- Référentiel des collaborateurs du cabinet
 -- ─────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS collaborateurs;
-CREATE TABLE collaborateurs (
+CREATE TABLE IF NOT EXISTS collaborateurs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     
     -- Identifiants
@@ -115,8 +113,7 @@ CREATE TABLE collaborateurs (
 -- Table : contacts
 -- Référentiel des contacts (personnes physiques liées aux dossiers)
 -- ─────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS contacts;
-CREATE TABLE contacts (
+CREATE TABLE IF NOT EXISTS contacts (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     
     -- Lien MDM
@@ -151,8 +148,7 @@ CREATE TABLE contacts (
 -- Mapping des comptes de produits DIA vers les services
 -- Pour détecter automatiquement quels clients ont quels services
 -- ─────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS mapping_comptes_services;
-CREATE TABLE mapping_comptes_services (
+CREATE TABLE IF NOT EXISTS mapping_comptes_services (
     id INT AUTO_INCREMENT PRIMARY KEY,
     compte_pattern VARCHAR(20) NOT NULL COMMENT 'Pattern de compte (ex: 706100%)',
     service ENUM('COMPTA', 'PAYE', 'JURIDIQUE', 'AUDIT') NOT NULL,
@@ -162,7 +158,7 @@ CREATE TABLE mapping_comptes_services (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Données initiales (à adapter selon votre plan comptable DIA)
-INSERT INTO mapping_comptes_services (compte_pattern, service, description) VALUES
+INSERT IGNORE INTO mapping_comptes_services (compte_pattern, service, description) VALUES
 ('706100%', 'COMPTA', 'Honoraires comptabilité'),
 ('706110%', 'COMPTA', 'Honoraires tenue comptable'),
 ('706120%', 'COMPTA', 'Honoraires révision'),

@@ -420,33 +420,105 @@ Une fois `raw_acd` en place, vous pourrez :
 
 ### ⚠️ Améliorations prioritaires
 
-#### 1. **Horodatage par base compta_* lors de l'import**
+#### 1. ✅ **Horodatage par base compta_* lors de l'import** (IMPLÉMENTÉ)
 
-**Problème** : Actuellement, si un import dure 19 heures pour 3500 bases, les bases ACD source peuvent être modifiées pendant le traitement. La date `last_sync_date` dans `sync_tracking` est mise à jour **à la fin** de tout l'import, ce qui peut causer :
-- Perte de données modifiées pendant l'import
-- Incohérence entre bases traitées au début vs à la fin
+**Problème initial** : Si un import dure plusieurs heures pour 3500 bases, les bases ACD source peuvent être modifiées pendant le traitement. La date `last_sync_date` dans `sync_tracking` était mise à jour **à la fin** de tout l'import.
 
-**Solution recommandée** :
-- Ajouter une colonne `dossier_code` dans la table `sync_tracking`
-- Enregistrer la date d'import **par base** au fur et à mesure
-- Modifier la table :
+**✅ Solution implémentée** :
+- Nouvelle table `sync_tracking_by_dossier` créée (préserve l'ancienne table `sync_tracking`)
+- Enregistrement de la date d'import **par dossier** au fur et à mesure
+- Structure de la table :
   ```sql
-  ALTER TABLE raw_acd.sync_tracking
-  ADD COLUMN dossier_code VARCHAR(20) DEFAULT NULL,
-  ADD KEY idx_dossier (dossier_code);
-
-  -- Nouvelle structure :
-  PRIMARY KEY (table_name, dossier_code)
+  CREATE TABLE sync_tracking_by_dossier (
+      table_name VARCHAR(50) NOT NULL,
+      dossier_code VARCHAR(20) NOT NULL,
+      last_sync_date DATETIME NOT NULL,
+      last_sync_type ENUM('full', 'incremental', 'since'),
+      last_status VARCHAR(20) DEFAULT 'success',
+      rows_imported INT DEFAULT 0,
+      PRIMARY KEY (table_name, dossier_code)
+  );
   ```
 
-**Bénéfices** :
+**✅ Bénéfices obtenus** :
 - Import incrémental plus précis (par dossier)
 - Traçabilité exacte de chaque base
-- Reprise possible en cas d'erreur sur une base spécifique
+- Reprise possible après crash sans tout réimporter
+- Double tracking : global (`sync_tracking`) + granulaire (`sync_tracking_by_dossier`)
 
 ---
 
-#### 2. **Vérification du mécanisme d'import incrémental**
+#### 2. ✅ **Optimisation import incrémental : filtrer par dossiers déjà importés** (IMPLÉMENTÉ)
+
+**Problème initial** : En mode `--incremental`, le script traitait **tous les dossiers** trouvés sur le serveur ACD, même ceux qui n'avaient jamais été importés auparavant.
+
+**Conséquence** :
+- Si un nouveau dossier `compta_99999` était créé sur ACD, il aurait été importé en mode incrémental
+- Mais la date de référence aurait été `last_sync_date` globale → risque de manquer des données historiques
+- Pas de traçabilité des nouveaux dossiers détectés
+
+**✅ Solution implémentée** :
+```bash
+# Dans 02_import_raw_compta.sh, après récupération des bases éligibles
+
+if [ "$MODE" = "incremental" ]; then
+    log "INFO" "Mode incrémental : filtrage des dossiers déjà connus..."
+
+    # Récupérer les dossiers déjà importés (présents dans raw_acd)
+    KNOWN_DOSSIERS=$($MYSQL $MYSQL_OPTS raw_acd -N -e "
+        SELECT DISTINCT dossier_code
+        FROM sync_tracking_by_dossier
+    ")
+
+    # Détecter les nouveaux dossiers
+    NEW_DOSSIERS=()
+    KNOWN_DOSSIERS_ARRAY=()
+
+    for DB in "${ELIGIBLE_DATABASES[@]}"; do
+        DOSSIER_CODE="${DB#compta_}"
+
+        if echo "$KNOWN_DOSSIERS" | grep -qx "$DOSSIER_CODE"; then
+            KNOWN_DOSSIERS_ARRAY+=("$DB")
+        else
+            NEW_DOSSIERS+=("$DB")
+        fi
+    done
+
+    # Logger les nouveaux dossiers détectés
+    if [ ${#NEW_DOSSIERS[@]} -gt 0 ]; then
+        log "WARNING" "🆕 ${#NEW_DOSSIERS[@]} nouveaux dossiers détectés (non importés en incrémental) :"
+        for NEW_DB in "${NEW_DOSSIERS[@]}"; do
+            log "WARNING" "   - $NEW_DB (nécessite un import --full pour historique complet)"
+        done
+    fi
+
+    # Utiliser uniquement les dossiers connus pour l'import incrémental
+    ELIGIBLE_DATABASES=("${KNOWN_DOSSIERS_ARRAY[@]}")
+    log "INFO" "Import incrémental limité à ${#ELIGIBLE_DATABASES[@]} dossiers connus"
+fi
+```
+
+**✅ Bénéfices obtenus** :
+- ✅ **Performance** : Import incrémental plus rapide (ne traite que les dossiers déjà connus)
+- ✅ **Traçabilité** : Log WARNING avec liste des nouveaux dossiers détectés
+- ✅ **Sécurité** : Évite d'importer partiellement un nouveau dossier (risque de données manquantes)
+- ✅ **Workflow clair** :
+  - Import `--incremental` = mise à jour uniquement des dossiers existants
+  - Import `--full` = ajout de nouveaux dossiers + mise à jour complète de tous les dossiers
+
+**Exemple de log attendu** :
+```
+[2025-01-25 14:30:00] [INFO] ℹ️  Mode incrémental : filtrage des dossiers déjà connus...
+[2025-01-25 14:30:02] [WARNING] ⚠️  🆕 3 nouveaux dossiers détectés (non importés en incrémental) :
+[2025-01-25 14:30:02] [WARNING] ⚠️     - compta_99999 (nécessite un import --full pour historique complet)
+[2025-01-25 14:30:02] [WARNING] ⚠️     - compta_88888 (nécessite un import --full pour historique complet)
+[2025-01-25 14:30:02] [WARNING] ⚠️     - compta_77777 (nécessite un import --full pour historique complet)
+[2025-01-25 14:30:02] [INFO] ℹ️  Import incrémental limité à 3497 dossiers connus
+```
+
+---
+
+#### 3. **Vérification du mécanisme d'import incrémental** (PARTIELLEMENT VALIDÉ)
 
 **Prompt de vérification** :
 > "Analyser le mécanisme d'import incrémental dans `02_import_raw_compta.sh` (lignes 221-255) pour vérifier :
@@ -507,9 +579,185 @@ Une fois `raw_acd` en place, vous pourrez :
 
 ---
 
+## 🔬 Optimisations avancées (non implémentées)
+
+Cette section documente des optimisations qui n'ont **pas été implémentées** mais qui pourraient être utiles dans des cas spécifiques.
+
+### 1. Mode staging avec swap atomique
+
+**Problème** : En cas de crash durant l'import, les données peuvent être partiellement importées, créant un état incohérent.
+
+**Solution** :
+```bash
+# 1. Import dans des tables temporaires
+LOAD DATA LOCAL INFILE '/tmp/data.tsv'
+REPLACE INTO TABLE raw_acd.histo_ligne_ecriture_tmp ...
+
+# 2. Vérifier la cohérence des données
+if [ validation OK ]; then
+    # 3. Swap atomique
+    RENAME TABLE
+        histo_ligne_ecriture TO histo_ligne_ecriture_old,
+        histo_ligne_ecriture_tmp TO histo_ligne_ecriture;
+
+    DROP TABLE histo_ligne_ecriture_old;
+fi
+```
+
+**Avantages** :
+- ✅ Rollback automatique en cas d'erreur
+- ✅ Pas d'état intermédiaire incohérent
+- ✅ Les utilisateurs voient toujours des données complètes
+
+**Inconvénients** :
+- ❌ Complexité élevée de mise en œuvre
+- ❌ Double espace disque nécessaire pendant l'import
+- ❌ Nécessite de dupliquer toutes les structures (tables, index, partitions)
+
+**Statut** : Non implémenté
+- Gain marginal pour le contexte actuel (volumétrie <200k lignes/dossier)
+- Mécanisme de reprise après crash via `sync_tracking_by_dossier` suffit
+
+---
+
+### 2. Fallback pour requêtes lentes
+
+**Problème** : Les requêtes avec `WHERE EXISTS` sur les jointures `HE_CODE`/`ECR_CODE` peuvent être lentes si les tables sources ACD n'ont pas d'index sur ces colonnes.
+
+**Exemple de requête potentiellement lente** :
+```sql
+SELECT * FROM ligne_ecriture
+WHERE EXISTS (
+    SELECT 1 FROM ecriture e
+    WHERE e.ECR_CODE = ligne_ecriture.ECR_CODE
+    AND e.ECR_DATE_SAI > '2025-01-01'
+)
+```
+
+**Solution** :
+```bash
+# Timeout de 30 secondes sur l'extraction
+timeout 30s $MYSQL -h "$ACD_HOST" ... || {
+    log "WARNING" "Requête lente détectée pour $DB.$TABLE, fallback import complet"
+    WHERE_CLAUSE=""  # Import complet pour cette table
+}
+```
+
+**Avantages** :
+- ✅ Évite de bloquer l'import sur une base problématique
+- ✅ Garantit la progression même en cas de problème de performance
+
+**Inconvénients** :
+- ❌ Perte de l'optimisation incrémentale pour cette base
+- ❌ Augmentation du temps d'import pour les bases concernées
+
+**Statut** : Non implémenté
+- Aucune compta ne dépasse 200 000 lignes actuellement
+- Performance acceptable dans tous les cas observés
+- À considérer si volumétrie augmente significativement
+
+---
+
+### 3. Approche en 2 temps pour jointures
+
+**Alternative aux `WHERE EXISTS`** si problèmes de performance :
+
+```bash
+# 1. Récupérer les codes d'écritures modifiées
+MODIFIED_ECR_CODES=$($MYSQL -h "$ACD_HOST" -N -e "
+    SELECT GROUP_CONCAT(ECR_CODE)
+    FROM \`$DB\`.ecriture
+    WHERE ECR_DATE_SAI > '$SYNC_DATE'
+")
+
+# 2. Filtrer les lignes avec IN clause
+WHERE_CLAUSE="WHERE ECR_CODE IN ($MODIFIED_ECR_CODES)"
+
+# 3. Extraction avec filtre direct
+$MYSQL -h "$ACD_HOST" -e "
+    SELECT $SELECT_COLS
+    FROM \`$DB\`.ligne_ecriture
+    $WHERE_CLAUSE
+"
+```
+
+**Avantages** :
+- ✅ Plus rapide si pas d'index sur colonne de jointure
+- ✅ Requête plus simple sans sous-requête corrélée
+- ✅ Peut bénéficier du cache MySQL
+
+**Inconvénients** :
+- ❌ Deux requêtes au lieu d'une (overhead réseau)
+- ❌ Limite de taille pour la clause `IN` (~1000-10000 valeurs selon config MySQL)
+- ❌ Peut échouer si trop d'écritures modifiées
+
+**Statut** : Non implémenté
+- Approche actuelle avec `WHERE EXISTS` suffisante
+- À considérer uniquement si problèmes de performance avérés
+- Nécessiterait gestion du chunking pour grandes volumétries
+
+---
+
+### 4. Compression réseau avancée
+
+**Problème** : Le transfert réseau peut être lent entre le serveur ACD et le serveur local, surtout pour les imports full.
+
+**Solutions possibles** :
+```bash
+# Option 1 : SSH tunnel avec compression
+ssh -C -L 3307:localhost:3306 user@acd-server
+
+# Option 2 : Compression MySQL native (déjà utilisée)
+$MYSQL --compress -h "$ACD_HOST" ...
+
+# Option 3 : Compression ZSTD (MySQL 8.0.18+)
+$MYSQL --compression-algorithms=zstd -h "$ACD_HOST" ...
+```
+
+**Statut** : Partiellement implémenté
+- ✅ `--compress` déjà utilisé dans le script actuel
+- ⏳ Compression ZSTD à tester si disponible sur serveur source
+
+---
+
+### 5. Parallélisme intelligent par volumétrie
+
+**Problème** : Toutes les bases sont traitées séquentiellement, même si certaines sont très petites.
+
+**Solution** :
+```bash
+# Trier les bases par volumétrie estimée
+SORTED_DATABASES=$(for DB in "${ELIGIBLE_DATABASES[@]}"; do
+    SIZE=$($MYSQL -h "$ACD_HOST" -N -e "
+        SELECT SUM(data_length)
+        FROM information_schema.tables
+        WHERE table_schema = '$DB'
+        AND table_name IN ('ecriture', 'ligne_ecriture')
+    ")
+    echo "$SIZE|$DB"
+done | sort -rn | cut -d'|' -f2)
+
+# Traiter les grosses bases en premier (optimisation du temps total)
+```
+
+**Avantages** :
+- ✅ Meilleure estimation du temps restant
+- ✅ Échecs précoces sur bases problématiques
+
+**Inconvénients** :
+- ❌ Requête supplémentaire par base avant import
+- ❌ Complexité accrue
+
+**Statut** : Non implémenté
+- Source ACD à 1 CPU : parallélisme limité de toute façon
+- Traitement séquentiel plus simple et prévisible
+
+---
+
 ## 📞 Support
 
 Pour toute question, vérifiez :
 1. Les logs dans `logs/pipeline_YYYYMMDD.log`
 2. Les statistiques : `bash bash/raw/02c_cleanup_acd.sh --stats`
 3. La table de tracking : `SELECT * FROM raw_acd.sync_tracking;`
+4. La table de tracking par dossier : `SELECT * FROM raw_acd.sync_tracking_by_dossier LIMIT 20;`

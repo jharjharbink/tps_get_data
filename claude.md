@@ -79,7 +79,10 @@ Actuellement, nous sommes en phase de **validation de la couche RAW** :
 
 **Mécanisme** :
 - Mode `--full` : TRUNCATE + réimport complet
-- Mode `--incremental` : Import avec filtre `WHERE date > last_sync_date` + `ON DUPLICATE KEY UPDATE`
+- Mode `--incremental` : Import avec filtre `WHERE ECR_DATE_SAI > last_sync_date` + `REPLACE INTO`
+  - ✅ Tables incrémentales : `ecriture`, `ligne_ecriture` (synchronisation depuis dernière date)
+  - ⏭️ Tables de référence : `compte`, `journal`, `histo_*` (ignorées en mode incrémental)
+  - ✅ Gestion NULL : `COALESCE(LE_LETP1, 0)` pour éviter erreurs MySQL LOAD DATA
 - Tracking via `sync_tracking` (last_sync_date, rows_count, duration)
 
 **Performance** :
@@ -94,7 +97,8 @@ Actuellement, nous sommes en phase de **validation de la couche RAW** :
 - ✅ Mécanisme d'import full (optimisé selon benchmark)
 - ✅ Optimisation performance (Méthode 1 - INSERT SELECT sans batching)
 - ✅ Suppression overhead : last_sync_date récupéré 1x au lieu de 3500x
-- 🔄 Mécanisme d'import incrémental (à tester en prod)
+- ✅ Mécanisme d'import incrémental ACD (validé en prod - synchronisation depuis dernière date)
+- ✅ Gestion NULL values dans colonnes integer (COALESCE appliqué sur LE_LETP1)
 - 🔄 Gestion des erreurs et reprises
 - ❌ Tracking par dossier (à implémenter)
 
@@ -268,8 +272,10 @@ ORDER BY HE_ANNEE;
 - ✅ Optimisation performances (benchmark Méthode 1 appliqué)
 - ✅ Récupération last_sync_date optimisée (1 requête au lieu de 3500+)
 - ✅ Simplification code import (approche directe comme benchmark)
-- 🔄 Validation import incrémental en prod
+- ✅ Validation import incrémental ACD (filtrage depuis dernière date de synchro)
+- ✅ Gestion valeurs NULL dans LE_LETP1 (COALESCE vers 0)
 - ⏳ Tests sur 3500 bases en production
+- ⏳ Import incrémental Pennylane (NEXT STEP)
 
 ### Phase 2 : Adaptation TRANSFORM
 1. **Adapter les procédures** pour utiliser raw_acd au lieu de boucler sur compta_*
