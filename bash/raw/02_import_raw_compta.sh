@@ -193,42 +193,50 @@ import_one_database() {
         # ─── Colonnes et requête SELECT selon la table ───
         local LOAD_COLUMNS=""
         local SELECT_COLS=""
+        local BASE_WHERE=""  # Filtres qualité données (appliqués toujours)
         local WHERE_CLAUSE=""
 
         case $TABLE in
             histo_ligne_ecriture)
                 LOAD_COLUMNS="(dossier_code, CPT_CODE, @hle_cre, @hle_deb, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET) SET HLE_CRE_ORG = NULLIF(@hle_cre, ''), HLE_DEB_ORG = NULLIF(@hle_deb, '')"
                 SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, IFNULL(HLE_CRE_ORG, ''), IFNULL(HLE_DEB_ORG, ''), HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, COALESCE(HLE_LETP1, 0), HLE_DATE_LET"
+                BASE_WHERE="HE_CODE IS NOT NULL"
             ;;
 
             histo_ecriture)
                 LOAD_COLUMNS="(dossier_code, HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE)"
                 SELECT_COLS="'$DOSSIER_CODE', HE_CODE, HE_DATE_SAI, HE_ANNEE, HE_MOIS, JNL_CODE"
+                BASE_WHERE=""
             ;;
 
             ligne_ecriture)
                 LOAD_COLUMNS="(dossier_code, CPT_CODE, @le_cre, @le_deb, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, LE_LETP1, LE_DATE_LET) SET LE_CRE_ORG = NULLIF(@le_cre, ''), LE_DEB_ORG = NULLIF(@le_deb, '')"
                 SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, IFNULL(LE_CRE_ORG, ''), IFNULL(LE_DEB_ORG, ''), ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, COALESCE(LE_LETP1, 0), LE_DATE_LET"
+                BASE_WHERE="ECR_CODE IS NOT NULL"
             ;;
 
             ecriture)
                 LOAD_COLUMNS="(dossier_code, ECR_CODE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE)"
                 SELECT_COLS="'$DOSSIER_CODE', ECR_CODE, ECR_DATE_SAI, ECR_ANNEE, ECR_MOIS, JNL_CODE"
+                BASE_WHERE=""
             ;;
 
             compte)
                 LOAD_COLUMNS="(dossier_code, CPT_CODE, CPT_LIB)"
                 SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, CPT_LIB"
+                BASE_WHERE=""
             ;;
 
             journal)
                 LOAD_COLUMNS="(dossier_code, JNL_CODE, JNL_LIB, JNL_TYPE)"
                 SELECT_COLS="'$DOSSIER_CODE', JNL_CODE, JNL_LIB, JNL_TYPE"
+                BASE_WHERE=""
             ;;
         esac
 
-        # ─── Filtre WHERE pour les tables incrémentales ───
+        # ─── Construction WHERE_CLAUSE selon le mode ───
         if [ "$MODE" = "incremental" ] || [ "$MODE" = "dossier-incremental" ]; then
+            # Mode incrémental : combiner BASE_WHERE + filtre temporel
             case $TABLE in
                 ecriture)
                     # Filtre direct sur ECR_DATE_SAI
@@ -237,15 +245,20 @@ import_one_database() {
                 ;;
 
                 ligne_ecriture)
-                    # Jointure avec ecriture sur ECR_CODE, filtre sur ECR_DATE_SAI
+                    # Jointure avec ecriture sur ECR_CODE + filtre temporel + qualité données
                     local SYNC_DATE=$(get_last_sync_date_for_dossier "$DOSSIER_CODE" "$TABLE")
-                    WHERE_CLAUSE="WHERE EXISTS (
+                    WHERE_CLAUSE="WHERE $BASE_WHERE AND EXISTS (
                         SELECT 1 FROM \`$DB\`.ecriture e
                         WHERE e.ECR_CODE = \`$DB\`.ligne_ecriture.ECR_CODE
                         AND e.ECR_DATE_SAI > STR_TO_DATE('$SYNC_DATE', '%Y-%m-%d %H:%i:%s')
                     )"
                 ;;
             esac
+        else
+            # Mode full : uniquement BASE_WHERE (si défini)
+            if [ -n "$BASE_WHERE" ]; then
+                WHERE_CLAUSE="WHERE $BASE_WHERE"
+            fi
         fi
 
         # ─── Mode DEBUG : Afficher la requête SQL ───
