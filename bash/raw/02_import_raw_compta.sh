@@ -345,7 +345,7 @@ if [ "$MODE" = "dossier-full" ]; then
     log "SUCCESS" "Données du dossier $TARGET_DOSSIER supprimées"
 
     # Vérifier que la base compta_* existe
-    local TARGET_DB="compta_$(echo "$TARGET_DOSSIER" | tr '[:upper:]' '[:lower:]')"
+    TARGET_DB="compta_$(echo "$TARGET_DOSSIER" | tr '[:upper:]' '[:lower:]')"
 
     if ! check_database_has_required_tables "$TARGET_DB"; then
         log "ERROR" "La base $TARGET_DB n'existe pas ou n'a pas les 6 tables requises"
@@ -369,7 +369,7 @@ fi
 
 # ─── MODE: dossier-incremental (import incrémental d'un seul dossier) ───
 if [ "$MODE" = "dossier-incremental" ]; then
-    local TARGET_DB="compta_$(echo "$TARGET_DOSSIER" | tr '[:upper:]' '[:lower:]')"
+    TARGET_DB="compta_$(echo "$TARGET_DOSSIER" | tr '[:upper:]' '[:lower:]')"
 
     if ! check_database_has_required_tables "$TARGET_DB"; then
         log "ERROR" "La base $TARGET_DB n'existe pas ou n'a pas les 6 tables requises"
