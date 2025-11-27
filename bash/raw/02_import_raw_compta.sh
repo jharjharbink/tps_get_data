@@ -441,12 +441,19 @@ fi
 # ─── Import de toutes les bases ───
 CURRENT=0
 SKIPPED_DOSSIERS=0
+FAILED_DOSSIERS=0
 START_TIME=$(date +%s)
+
+log_section "IMPORT RAW_ACD - Traitement de $TOTAL_DBS bases"
 
 for DB in "${DATABASES[@]}"; do
     CURRENT=$((CURRENT + 1))
 
+    # Log périodique tous les 100 dossiers + premier + dernier
     if [ "$DEBUG" = false ]; then
+        if [ $CURRENT -eq 1 ] || [ $CURRENT -eq $TOTAL_DBS ] || [ $((CURRENT % 100)) -eq 0 ]; then
+            log "INFO" "Progression: [$CURRENT/$TOTAL_DBS] bases traitées..."
+        fi
         printf "\r[%d/%d] Traitement de %-30s" "$CURRENT" "$TOTAL_DBS" "$DB"
     fi
 
@@ -460,7 +467,7 @@ END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 
 echo ""  # Nouvelle ligne après la progression
-log "SUCCESS" "✅ Import terminé en ${DURATION}s"
+log "SUCCESS" "✅ Import terminé en ${DURATION}s ($TOTAL_DBS bases traitées)"
 
 if [ "$SKIPPED_DOSSIERS" -gt 0 ]; then
     log "WARNING" "⚠️  $SKIPPED_DOSSIERS dossier(s) ignoré(s) (code trop long > 20 caractères)"
