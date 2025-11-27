@@ -10,6 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/logging.sh"
 
+# ─── Configuration pagination ──────────────────────────────
+BATCH_SIZE=100000  # Nombre de lignes par batch pour general_ledger
+
 # ─── Arguments ─────────────────────────────────────────────
 MODE="full"  # Par défaut: import complet
 SINCE_DATE=""
@@ -179,9 +182,9 @@ if [ $? -ne 0 ]; then
 fi
 log "SUCCESS" "Export Fiscal Years OK"
 
-# ─── Export General Ledger ──────────────────────────────────
+# ─── Export General Ledger (paginé par batches) ────────────
 log_subsection "Export pl_general_ledger"
-log "INFO" "Export General Ledger depuis Redshift (peut être long)..."
+log "INFO" "Export General Ledger depuis Redshift (mode paginé, $BATCH_SIZE lignes/batch)..."
 
 # Construire la clause WHERE pour GL
 WHERE_CLAUSE_GL=""
@@ -190,9 +193,36 @@ if [ "$MODE" != "full" ] && [ -n "$SINCE_DATE" ]; then
     log "INFO" "Filtre GL: document_updated_at >= $SINCE_DATE"
 fi
 
-psql --csv -v ON_ERROR_STOP=1 --pset null='NULL' \
-    -h "$REDSHIFT_HOST" -p "$REDSHIFT_PORT" -U "$REDSHIFT_USER" -d "$REDSHIFT_DB" \
-    > "$TMP_GL" <<EOF
+# Préparer la table pour l'import (TRUNCATE si full)
+if [ "$MODE" = "full" ]; then
+    log "INFO" "Mode full: TRUNCATE pl_general_ledger + désactivation indexes..."
+    $MYSQL $MYSQL_OPTS -e "
+    SET FOREIGN_KEY_CHECKS = 0;
+    SET UNIQUE_CHECKS = 0;
+    ALTER TABLE raw_pennylane.pl_general_ledger DISABLE KEYS;
+    TRUNCATE TABLE raw_pennylane.pl_general_ledger;
+    "
+fi
+
+# Export et import par batches
+OFFSET=0
+BATCH_NUM=1
+TOTAL_ROWS=0
+GL_EXPORT_FAILED=false
+
+while true; do
+    BATCH_FILE="/tmp/gl_batch_${OFFSET}.csv"
+
+    log "INFO" "Batch $BATCH_NUM: export OFFSET $OFFSET LIMIT $BATCH_SIZE..."
+
+    # Export du batch depuis Redshift
+    RETRY_COUNT=0
+    BATCH_SUCCESS=false
+
+    while [ $RETRY_COUNT -lt 2 ]; do
+        if psql --csv -v ON_ERROR_STOP=1 --pset null='NULL' \
+            -h "$REDSHIFT_HOST" -p "$REDSHIFT_PORT" -U "$REDSHIFT_USER" -d "$REDSHIFT_DB" \
+            > "$BATCH_FILE" 2>/dev/null <<EOF
 SELECT
     glv.id AS gl_line_id,
     glv.company_id,
@@ -207,14 +237,95 @@ SELECT
     glv.document_updated_at
 FROM accounting.general_ledger_revision glv
 $WHERE_CLAUSE_GL
-ORDER BY glv.company_id, glv.plan_item_number, glv."date";
+ORDER BY glv.id
+LIMIT $BATCH_SIZE OFFSET $OFFSET;
 EOF
+        then
+            BATCH_SUCCESS=true
+            break
+        else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -lt 2 ]; then
+                log "WARNING" "Échec export batch $BATCH_NUM (tentative $RETRY_COUNT/2), retry..."
+                sleep 2
+            fi
+        fi
+    done
 
-if [ $? -ne 0 ]; then
-    log "ERROR" "Échec export General Ledger"
-    exit 1
+    # Si échec après 2 tentatives, arrêter l'import de cette table
+    if [ "$BATCH_SUCCESS" = false ]; then
+        log "ERROR" "Échec export batch $BATCH_NUM après 2 tentatives - arrêt import pl_general_ledger"
+        GL_EXPORT_FAILED=true
+        rm -f "$BATCH_FILE"
+        break
+    fi
+
+    # Vérifier si le batch est vide (fin des données)
+    ROWS=$(tail -n +2 "$BATCH_FILE" | wc -l)
+    if [ "$ROWS" -eq 0 ]; then
+        log "INFO" "Batch $BATCH_NUM vide - fin de l'export"
+        rm -f "$BATCH_FILE"
+        break
+    fi
+
+    log "INFO" "Batch $BATCH_NUM: $ROWS lignes exportées, import MySQL..."
+
+    # Import du batch dans MySQL
+    if [ "$MODE" = "full" ]; then
+        LOAD_MODE="INTO"
+    else
+        LOAD_MODE="REPLACE INTO"
+    fi
+
+    if ! $MYSQL $MYSQL_OPTS --local-infile=1 -e "
+    LOAD DATA LOCAL INFILE '$BATCH_FILE'
+    $LOAD_MODE TABLE raw_pennylane.pl_general_ledger
+    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
+    IGNORE 1 LINES
+    (gl_line_id, company_id, company_name, txn_date, compte, compte_label,
+     journal_code, journal_label, debit, credit, document_updated_at);
+    " 2>/dev/null; then
+        log "ERROR" "Échec import batch $BATCH_NUM dans MySQL - arrêt import pl_general_ledger"
+        GL_EXPORT_FAILED=true
+        rm -f "$BATCH_FILE"
+        break
+    fi
+
+    TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
+    log "SUCCESS" "Batch $BATCH_NUM importé ($ROWS lignes) - Total: $TOTAL_ROWS lignes"
+
+    # Nettoyage du batch
+    rm -f "$BATCH_FILE"
+
+    # Si moins de lignes que BATCH_SIZE, c'est le dernier batch
+    if [ "$ROWS" -lt "$BATCH_SIZE" ]; then
+        log "INFO" "Dernier batch traité (< $BATCH_SIZE lignes)"
+        break
+    fi
+
+    # Passer au batch suivant
+    OFFSET=$((OFFSET + BATCH_SIZE))
+    BATCH_NUM=$((BATCH_NUM + 1))
+done
+
+# Réactiver les indexes si mode full
+if [ "$MODE" = "full" ] && [ "$GL_EXPORT_FAILED" = false ]; then
+    log "INFO" "Reconstruction des indexes pl_general_ledger..."
+    $MYSQL $MYSQL_OPTS -e "
+    ALTER TABLE raw_pennylane.pl_general_ledger ENABLE KEYS;
+    SET UNIQUE_CHECKS = 1;
+    SET FOREIGN_KEY_CHECKS = 1;
+    "
+    log "SUCCESS" "Indexes reconstruits"
 fi
-log "SUCCESS" "Export General Ledger OK"
+
+if [ "$GL_EXPORT_FAILED" = true ]; then
+    log "WARNING" "Import pl_general_ledger incomplet - passage aux tables suivantes"
+    GL_COUNT=0
+else
+    GL_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_pennylane.pl_general_ledger")
+    log "SUCCESS" "Export/Import General Ledger OK - $GL_COUNT lignes au total"
+fi
 
 # ─── Chargement dans MySQL ──────────────────────────────────
 log_section "CHARGEMENT DANS MYSQL"
@@ -267,51 +378,6 @@ IGNORE 1 LINES
 "
 FY_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_pennylane.pl_fiscal_years")
 log "SUCCESS" "pl_fiscal_years: $FY_COUNT lignes"
-
-# Chargement GL direct avec désactivation des index (plus rapide pour gros volumes)
-log "INFO" "Chargement pl_general_ledger..."
-
-TOTAL_LINES=$(tail -n +2 "$TMP_GL" | wc -l)
-log "INFO" "$TOTAL_LINES lignes à charger"
-
-if [ "$MODE" = "full" ]; then
-    # Mode full: TRUNCATE et optimisations
-    $MYSQL $MYSQL_OPTS -e "
-    SET FOREIGN_KEY_CHECKS = 0;
-    SET UNIQUE_CHECKS = 0;
-    ALTER TABLE raw_pennylane.pl_general_ledger DISABLE KEYS;
-    TRUNCATE TABLE raw_pennylane.pl_general_ledger;
-    "
-
-    $MYSQL $MYSQL_OPTS --local-infile=1 -e "
-    LOAD DATA LOCAL INFILE '$TMP_GL'
-    INTO TABLE raw_pennylane.pl_general_ledger
-    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
-    IGNORE 1 LINES
-    (gl_line_id, company_id, company_name, txn_date, compte, compte_label,
-     journal_code, journal_label, debit, credit, document_updated_at);
-    "
-
-    log "INFO" "Reconstruction des index..."
-    $MYSQL $MYSQL_OPTS -e "
-    ALTER TABLE raw_pennylane.pl_general_ledger ENABLE KEYS;
-    SET UNIQUE_CHECKS = 1;
-    SET FOREIGN_KEY_CHECKS = 1;
-    "
-else
-    # Mode incremental/since: REPLACE INTO (plus lent mais gère les doublons)
-    $MYSQL $MYSQL_OPTS --local-infile=1 -e "
-    LOAD DATA LOCAL INFILE '$TMP_GL'
-    REPLACE INTO TABLE raw_pennylane.pl_general_ledger
-    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
-    IGNORE 1 LINES
-    (gl_line_id, company_id, company_name, txn_date, compte, compte_label,
-     journal_code, journal_label, debit, credit, document_updated_at);
-    "
-fi
-
-GL_COUNT=$($MYSQL $MYSQL_OPTS -N -e "SELECT COUNT(*) FROM raw_pennylane.pl_general_ledger")
-log "SUCCESS" "pl_general_ledger: $GL_COUNT lignes"
 
 # Nettoyage
 log "INFO" "Nettoyage fichiers temporaires..."
