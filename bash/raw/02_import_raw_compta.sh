@@ -197,8 +197,8 @@ import_one_database() {
 
         case $TABLE in
             histo_ligne_ecriture)
-                LOAD_COLUMNS="(dossier_code, CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET)"
-                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, HLE_CRE_ORG, HLE_DEB_ORG, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, COALESCE(HLE_LETP1, 0), HLE_DATE_LET"
+                LOAD_COLUMNS="(dossier_code, CPT_CODE, @hle_cre, @hle_deb, HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, HLE_LETP1, HLE_DATE_LET) SET HLE_CRE_ORG = NULLIF(@hle_cre, ''), HLE_DEB_ORG = NULLIF(@hle_deb, '')"
+                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, IFNULL(HLE_CRE_ORG, ''), IFNULL(HLE_DEB_ORG, ''), HE_CODE, HLE_CODE, HLE_LIB, HLE_JOUR, HLE_PIECE, HLE_LET, COALESCE(HLE_LETP1, 0), HLE_DATE_LET"
             ;;
 
             histo_ecriture)
@@ -207,8 +207,8 @@ import_one_database() {
             ;;
 
             ligne_ecriture)
-                LOAD_COLUMNS="(dossier_code, CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, LE_LETP1, LE_DATE_LET)"
-                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, LE_CRE_ORG, LE_DEB_ORG, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, COALESCE(LE_LETP1, 0), LE_DATE_LET"
+                LOAD_COLUMNS="(dossier_code, CPT_CODE, @le_cre, @le_deb, ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, LE_LETP1, LE_DATE_LET) SET LE_CRE_ORG = NULLIF(@le_cre, ''), LE_DEB_ORG = NULLIF(@le_deb, '')"
+                SELECT_COLS="'$DOSSIER_CODE', CPT_CODE, IFNULL(LE_CRE_ORG, ''), IFNULL(LE_DEB_ORG, ''), ECR_CODE, LE_CODE, LE_LIB, LE_JOUR, LE_PIECE, LE_LET, COALESCE(LE_LETP1, 0), LE_DATE_LET"
             ;;
 
             ecriture)
