@@ -307,9 +307,9 @@ import_one_database() {
             LINES TERMINATED BY '\n'
             $LOAD_COLUMNS
         "; then
-            log "ERROR" "Échec import $TABLE pour $DB (erreur LOAD DATA ci-dessus)"
+            log "ERROR" "Échec import $TABLE pour $DB - passage à la table suivante"
             rm -f "$TMP_FILE"
-            exit 1
+            continue
         fi
 
         local LOAD_END=$(date +%s.%N)
